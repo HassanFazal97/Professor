@@ -14,6 +14,24 @@ export default function WhiteboardOverlay() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const { pendingStrokes, clearPendingStrokes } = useWhiteboard();
 
+  // Keep the canvas bitmap buffer in sync with its CSS layout size.
+  // Without this, the default 300×150 buffer causes strokes to be
+  // stretched and clipped.
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+
+    const sync = () => {
+      canvas.width = canvas.offsetWidth;
+      canvas.height = canvas.offsetHeight;
+    };
+
+    sync();
+    const observer = new ResizeObserver(sync);
+    observer.observe(canvas);
+    return () => observer.disconnect();
+  }, []);
+
   useEffect(() => {
     if (!pendingStrokes || !canvasRef.current) return;
 
