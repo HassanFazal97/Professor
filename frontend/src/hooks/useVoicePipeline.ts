@@ -3,18 +3,21 @@
 import { useCallback, useRef, useState } from "react";
 import { useTutorSession } from "./useTutorSession";
 
-/**
- * Manages microphone capture and Deepgram STT integration.
- *
- * Current implementation: captures mic audio via MediaRecorder and
- * sends final transcripts to the backend WebSocket.
- *
- * TODO: pipe raw audio bytes to the backend for real-time Deepgram proxying
- * instead of using browser-level MediaRecorder chunks.
- */
+// Preferred mime type — webm/opus is supported in Chrome, Firefox, and Edge.
+// The backend tells Deepgram to expect encoding=opus&container=webm.
+const PREFERRED_MIME = "audio/webm;codecs=opus";
+const FALLBACK_MIME = "audio/webm";
+const CHUNK_INTERVAL_MS = 250;
+
+function getSupportedMimeType(): string {
+  if (MediaRecorder.isTypeSupported(PREFERRED_MIME)) return PREFERRED_MIME;
+  if (MediaRecorder.isTypeSupported(FALLBACK_MIME)) return FALLBACK_MIME;
+  return ""; // let the browser choose
+}
+
 export function useVoicePipeline() {
   const [isListening, setIsListening] = useState(false);
-  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const recorderRef = useRef<MediaRecorder | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const { send, isConnected } = useTutorSession();
 
@@ -22,30 +25,39 @@ export function useVoicePipeline() {
     if (isListening || !isConnected) return;
 
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          echoCancellation: true,  // removes Ada's voice from the mic signal
+          noiseSuppression: true,  // reduces background noise
+          autoGainControl: true,   // normalises volume
+        },
+      });
       streamRef.current = stream;
 
-      // TODO: replace with raw PCM streaming to backend for Deepgram proxy
-      // For now use SpeechRecognition (Web Speech API) as a development stub
-      if ("webkitSpeechRecognition" in window || "SpeechRecognition" in window) {
-        const SpeechRecognition =
-          (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
-        const recognition = new SpeechRecognition();
-        recognition.continuous = true;
-        recognition.interimResults = false;
-        recognition.lang = "en-US";
+      const mimeType = getSupportedMimeType();
+      const recorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
 
-        recognition.onresult = (event: any) => {
-          const transcript = event.results[event.results.length - 1][0].transcript.trim();
-          if (transcript) {
-            send({ type: "transcript", text: transcript });
-          }
-        };
+      recorder.ondataavailable = async (e) => {
+        if (e.data.size === 0) return;
 
-        recognition.start();
-        (streamRef as any).recognition = recognition;
-      }
+        // Drop the chunk while Ada is speaking. Browser echo cancellation isn't
+        // guaranteed to cover AudioContext playback, so we gate at the source:
+        // nothing reaches Deepgram while Ada's audio is playing.
+        if (useTutorSession.getState().adaSpeaking) return;
 
+        // Convert Blob → ArrayBuffer → base64 and send to backend
+        const buffer = await e.data.arrayBuffer();
+        const bytes = new Uint8Array(buffer);
+        let binary = "";
+        for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+        send({ type: "audio_data", data: btoa(binary) });
+      };
+
+      // Tell the backend to open a Deepgram connection
+      send({ type: "audio_start" });
+
+      recorder.start(CHUNK_INTERVAL_MS);
+      recorderRef.current = recorder;
       setIsListening(true);
     } catch (err) {
       console.error("Microphone access denied:", err);
@@ -55,15 +67,14 @@ export function useVoicePipeline() {
   const stopListening = useCallback(() => {
     if (!isListening) return;
 
-    const recognition = (streamRef as any).recognition;
-    recognition?.stop();
-
-    streamRef.current?.getTracks().forEach((track) => track.stop());
+    recorderRef.current?.stop();
+    streamRef.current?.getTracks().forEach((t) => t.stop());
+    recorderRef.current = null;
     streamRef.current = null;
-    mediaRecorderRef.current = null;
 
+    send({ type: "audio_stop" });
     setIsListening(false);
-  }, [isListening]);
+  }, [isListening, send]);
 
   return { isListening, startListening, stopListening };
 }
