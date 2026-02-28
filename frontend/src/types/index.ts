@@ -79,7 +79,26 @@ export interface BoardSnapshotMessage {
   image_base64: string;
 }
 
-export type ClientMessage = SessionStartMessage | TranscriptMessage | BoardSnapshotMessage;
+export interface AudioStartMessage {
+  type: "audio_start";
+}
+
+export interface AudioDataMessage {
+  type: "audio_data";
+  data: string; // base64-encoded audio chunk (webm/opus)
+}
+
+export interface AudioStopMessage {
+  type: "audio_stop";
+}
+
+export type ClientMessage =
+  | SessionStartMessage
+  | TranscriptMessage
+  | BoardSnapshotMessage
+  | AudioStartMessage
+  | AudioDataMessage
+  | AudioStopMessage;
 
 // Server → Client
 export interface ConnectedMessage {
@@ -108,6 +127,15 @@ export interface BoardActionMessage {
   action: BoardAction;
 }
 
+export interface TranscriptInterimMessage {
+  type: "transcript_interim";
+  text: string;
+}
+
+export interface BargeinMessage {
+  type: "barge_in";
+}
+
 export interface ErrorMessage {
   type: "error";
   message: string;
@@ -119,4 +147,6 @@ export type ServerMessage =
   | AudioChunkMessage
   | StrokesMessage
   | BoardActionMessage
+  | TranscriptInterimMessage
+  | BargeinMessage
   | ErrorMessage;
