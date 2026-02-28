@@ -1,34 +1,41 @@
 import os
-from typing import AsyncIterator
+import ssl
 
 import aiohttp
+import certifi
+
+_SSL_CTX = ssl.create_default_context(cafile=certifi.where())
 
 ELEVENLABS_API_URL = "https://api.elevenlabs.io/v1/text-to-speech"
 
 
 class TTSClient:
     def __init__(self):
-        self.api_key = os.getenv("ELEVENLABS_API_KEY", "")
-        self.voice_id = os.getenv("ELEVENLABS_VOICE_ID", "21m00Tcm4TlvDq8ikWAM")  # Rachel default
+        self.api_key = os.getenv("ELEVENLABS_API_KEY", "").strip()
+        self.voice_id = os.getenv("ELEVENLABS_VOICE_ID", "21m00Tcm4TlvDq8ikWAM")  # Rachel
+        self.enabled = bool(self.api_key)
 
-    async def stream_audio(self, text: str) -> AsyncIterator[bytes]:
+    async def synthesize(self, text: str) -> bytes:
         """
-        Stream TTS audio from ElevenLabs for the given text.
+        Convert text to speech via ElevenLabs and return complete mp3 bytes.
 
-        Yields raw audio bytes (mp3) in chunks suitable for streaming to the frontend.
+        Returns empty bytes if no API key is configured, so the rest of the
+        session continues normally without audio.
         """
-        # TODO: implement actual ElevenLabs streaming
-        # Endpoint: POST /v1/text-to-speech/{voice_id}/stream
-        # Headers: xi-api-key, Content-Type: application/json
-        # Body: { "text": text, "model_id": "eleven_turbo_v2", "voice_settings": {...} }
-        # Stream the response body and yield chunks
+        if not self.enabled or not text.strip():
+            return b""
 
-        # Stub — yield nothing
-        return
-        yield  # make this an async generator
+        try:
+            chunks: list[bytes] = []
+            async for chunk in self._stream(text):
+                chunks.append(chunk)
+            return b"".join(chunks)
+        except Exception as e:
+            print(f"TTS error: {e}")
+            return b""
 
-    async def _post_stream(self, text: str) -> AsyncIterator[bytes]:
-        """Internal: POST to ElevenLabs and stream response chunks."""
+    async def _stream(self, text: str):
+        """POST to ElevenLabs streaming endpoint and yield raw mp3 chunks."""
         url = f"{ELEVENLABS_API_URL}/{self.voice_id}/stream"
         headers = {
             "xi-api-key": self.api_key,
@@ -37,10 +44,15 @@ class TTSClient:
         }
         payload = {
             "text": text,
-            "model_id": "eleven_turbo_v2",
-            "voice_settings": {"stability": 0.5, "similarity_boost": 0.75},
+            "model_id": "eleven_flash_v2_5",
+            "voice_settings": {
+                "stability": 0.5,
+                "similarity_boost": 0.75,
+                "use_speaker_boost": True,
+            },
         }
-        async with aiohttp.ClientSession() as session:
+        connector = aiohttp.TCPConnector(ssl=_SSL_CTX)
+        async with aiohttp.ClientSession(connector=connector) as session:
             async with session.post(url, headers=headers, json=payload) as resp:
                 resp.raise_for_status()
                 async for chunk in resp.content.iter_chunked(4096):
