@@ -63,7 +63,11 @@ export class TutorWebSocket {
 
       this.ws.onclose = (event) => {
         console.log("WebSocket closed:", event.code, event.reason);
-        if (this.shouldReconnect && this.reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
+        // 1000 = normal close, 1011 = server error — don't reconnect on these,
+        // only reconnect on network-level drops (1006 = abnormal, no code)
+        const isServerError = event.code === 1011;
+        const isNormalClose = event.code === 1000;
+        if (this.shouldReconnect && !isServerError && !isNormalClose && this.reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
           this.reconnectAttempts++;
           console.log(`Reconnecting in ${RECONNECT_DELAY_MS}ms (attempt ${this.reconnectAttempts})`);
           setTimeout(() => this._open(), RECONNECT_DELAY_MS);
