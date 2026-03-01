@@ -2,6 +2,7 @@ import type { ClientMessage, ServerMessage } from "@/types";
 
 type MessageHandler = (msg: ServerMessage) => void;
 type OpenHandler = () => void;
+type CloseHandler = (code: number, reason: string) => void;
 
 const RECONNECT_DELAY_MS = 2000;
 const MAX_RECONNECT_ATTEMPTS = 5;
@@ -11,6 +12,7 @@ export class TutorWebSocket {
   private ws: WebSocket | null = null;
   private messageHandler: MessageHandler;
   private openHandler: OpenHandler | null = null;
+  private closeHandler: CloseHandler | null = null;
   private reconnectAttempts = 0;
   private shouldReconnect = true;
 
@@ -42,6 +44,10 @@ export class TutorWebSocket {
     this.openHandler = handler;
   }
 
+  onClose(handler: CloseHandler): void {
+    this.closeHandler = handler;
+  }
+
   private _open(): void {
     try {
       this.ws = new WebSocket(this.url);
@@ -63,6 +69,7 @@ export class TutorWebSocket {
 
       this.ws.onclose = (event) => {
         console.log("WebSocket closed:", event.code, event.reason);
+        this.closeHandler?.(event.code, event.reason);
         // 1000 = normal close, 1011 = server error — don't reconnect on these,
         // only reconnect on network-level drops (1006 = abnormal, no code)
         const isServerError = event.code === 1011;

@@ -62,13 +62,19 @@ function applyBoardAction(editor: Editor, action: BoardAction): void {
     case "clear": {
       const ids = [...editor.getCurrentPageShapeIds()];
       if (ids.length > 0) editor.deleteShapes(ids);
+      // Also wipe Ada's handwriting strokes and stop any in-progress animation
+      useWhiteboard.getState().cancelStrokes();
+      useWhiteboard.getState().clearOverlay();
       break;
     }
   }
 }
 
+const SNAPSHOT_MIN_INTERVAL_MS = 2500; // don't send more than once every 2.5s
+
 export default function Whiteboard() {
   const editorRef = useRef<Editor | null>(null);
+  const lastSnapshotRef = useRef<number>(0);
   const { onSnapshotReady, pendingBoardActions, clearBoardActions } = useWhiteboard();
 
   // Process board actions from Ada whenever the queue changes
@@ -84,32 +90,74 @@ export default function Whiteboard() {
   const handleMount = useCallback((editor: Editor) => {
     editorRef.current = editor;
 
-    // Trigger snapshot on 2.5s drawing pause
+    // Lock the camera at origin (page 0,0 = overlay canvas 0,0) so that
+    // Ada's handwriting coordinates and tldraw page coordinates share the
+    // same space, enabling accurate composite snapshots.
+    editor.setCamera({ x: 0, y: 0, z: 1 });
+
+    // Trigger snapshot on short drawing pause for better responsiveness
     let idleTimer: ReturnType<typeof setTimeout> | null = null;
     editor.on("change", () => {
       if (idleTimer) clearTimeout(idleTimer);
       idleTimer = setTimeout(async () => {
         await captureSnapshot(editor);
-      }, 2500);
+      }, 1400);
     });
   }, []);
 
   const captureSnapshot = async (editor: Editor) => {
+    const now = Date.now();
+    if (now - lastSnapshotRef.current < SNAPSHOT_MIN_INTERVAL_MS) return;
+    lastSnapshotRef.current = now;
     try {
       const ids = [...editor.getCurrentPageShapeIds()];
-      if (ids.length === 0) return;
-      const blob = await exportToBlob({
-        editor,
-        ids,
-        format: "png",
-        opts: { scale: 0.5 },
-      });
-      const reader = new FileReader();
-      reader.onload = () => {
-        const base64 = (reader.result as string).split(",")[1];
-        onSnapshotReady(base64);
-      };
-      reader.readAsDataURL(blob);
+      const overlayCanvas = useWhiteboard.getState().overlayCanvas;
+
+      // Nothing to capture yet
+      if (ids.length === 0 && !overlayCanvas) return;
+
+      const container = editor.getContainer();
+      const W = container.offsetWidth;
+      const H = container.offsetHeight;
+
+      // Composite canvas: white background → tldraw shapes → Ada's overlay strokes
+      const composite = document.createElement("canvas");
+      composite.width = W;
+      composite.height = H;
+      const ctx = composite.getContext("2d")!;
+      ctx.fillStyle = "#ffffff";
+      ctx.fillRect(0, 0, W, H);
+
+      // Draw tldraw shapes. Export using the current viewport bounds so the
+      // output pixels align with overlay canvas coordinates (both are 0,0-anchored
+      // at the container top-left when the camera is at identity).
+      if (ids.length > 0) {
+        const viewBounds = editor.getViewportPageBounds();
+        const blob = await exportToBlob({
+          editor,
+          ids,
+          format: "png",
+          opts: { bounds: viewBounds, scale: 1 },
+        });
+        await new Promise<void>((resolve) => {
+          const img = new Image();
+          const url = URL.createObjectURL(blob);
+          img.onload = () => {
+            ctx.drawImage(img, 0, 0, W, H);
+            URL.revokeObjectURL(url);
+            resolve();
+          };
+          img.src = url;
+        });
+      }
+
+      // Draw Ada's accumulated handwriting strokes on top
+      if (overlayCanvas) {
+        ctx.drawImage(overlayCanvas, 0, 0, W, H);
+      }
+
+      const base64 = composite.toDataURL("image/png").split(",")[1];
+      onSnapshotReady(base64, W, H);
     } catch (err) {
       console.warn("Snapshot failed:", err);
     }

@@ -40,10 +40,10 @@ export function useVoicePipeline() {
       recorder.ondataavailable = async (e) => {
         if (e.data.size === 0) return;
 
-        // Drop the chunk while Ada is speaking. Browser echo cancellation isn't
-        // guaranteed to cover AudioContext playback, so we gate at the source:
-        // nothing reaches Deepgram while Ada's audio is playing.
-        if (useTutorSession.getState().adaSpeaking) return;
+        // Keep forwarding mic chunks even while Ada is speaking so Deepgram can
+        // fire SpeechStarted immediately when the student talks over Ada.
+        // Echo suppression is handled by browser audio constraints + backend
+        // confidence/echo filters.
 
         // Convert Blob → ArrayBuffer → base64 and send to backend
         const buffer = await e.data.arrayBuffer();

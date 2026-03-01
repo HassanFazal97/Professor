@@ -14,7 +14,8 @@ interface TutorSessionState {
   tutorMode: TutorMode;
   conversationHistory: ConversationTurn[];
   isConnected: boolean;
-  adaSpeaking: boolean;  // true while Ada's audio is playing
+  adaSpeaking: boolean;     // true while Ada's audio is playing
+  waitForStudent: boolean;  // true when Ada asked a question and is waiting
   ws: TutorWebSocket | null;
 
   // Actions
@@ -26,12 +27,39 @@ interface TutorSessionState {
   _handleServerMessage: (msg: ServerMessage) => void;
 }
 
-export const useTutorSession = create<TutorSessionState>((set, get) => ({
+export const useTutorSession = create<TutorSessionState>((set, get) => {
+  const resolveWsUrl = (sessionId: string): string => {
+    const configured = process.env.NEXT_PUBLIC_BACKEND_WS_URL?.trim();
+    if (configured) {
+      const normalized = configured
+        .replace(/^http:\/\//i, "ws://")
+        .replace(/^https:\/\//i, "wss://")
+        .replace(/\/+$/, "");
+      const base = normalized.startsWith("ws://") || normalized.startsWith("wss://")
+        ? normalized
+        : `ws://${normalized}`;
+      return `${base}/ws/${sessionId}`;
+    }
+
+    if (typeof window !== "undefined") {
+      const proto = window.location.protocol === "https:" ? "wss" : "ws";
+      return `${proto}://${window.location.hostname}:8000/ws/${sessionId}`;
+    }
+
+    return `ws://localhost:8000/ws/${sessionId}`;
+  };
+
+  // When Ada finishes speaking naturally (queue drained), clear the speaking
+  // flag so the microphone gate opens and the student can be heard again.
+  audioPlayer.onDrained = () => set({ adaSpeaking: false });
+
+  return {
   sessionId: null,
   tutorMode: "listening",
   conversationHistory: [],
   isConnected: false,
   adaSpeaking: false,
+  waitForStudent: false,
   ws: null,
 
   startSession: (subject: string) => {
@@ -40,7 +68,7 @@ export const useTutorSession = create<TutorSessionState>((set, get) => ({
 
     const sessionId = crypto.randomUUID();
     const ws = new TutorWebSocket(
-      `ws://localhost:8000/ws/${sessionId}`,
+      resolveWsUrl(sessionId),
       (msg: ServerMessage) => get()._handleServerMessage(msg),
     );
 
@@ -51,6 +79,10 @@ export const useTutorSession = create<TutorSessionState>((set, get) => ({
     ws.onOpen(() => {
       set({ isConnected: true });
       get().send({ type: "session_start", subject });
+    });
+
+    ws.onClose(() => {
+      set({ isConnected: false, adaSpeaking: false });
     });
   },
 
@@ -65,6 +97,7 @@ export const useTutorSession = create<TutorSessionState>((set, get) => ({
       ws: null,
       isConnected: false,
       adaSpeaking: false,
+      waitForStudent: false,
       conversationHistory: [],
       tutorMode: "listening",
     });
@@ -105,9 +138,10 @@ export const useTutorSession = create<TutorSessionState>((set, get) => ({
         break;
 
       case "barge_in":
-        // User started speaking — cut Ada's audio immediately
+        // User started speaking — cut Ada's audio and stroke animation immediately
         audioPlayer.stop();
-        set({ adaSpeaking: false });
+        set({ adaSpeaking: false, waitForStudent: false });
+        useWhiteboard.getState().cancelStrokes();
         break;
 
       case "audio_chunk":
@@ -125,13 +159,25 @@ export const useTutorSession = create<TutorSessionState>((set, get) => ({
 
       case "transcript_interim":
         // Add the user's spoken words to the conversation immediately,
-        // before Ada's response arrives, so the UI feels responsive
-        set((state) => ({
-          conversationHistory: [
-            ...state.conversationHistory,
-            { role: "user", content: msg.text },
-          ],
-        }));
+        // before Ada's response arrives, so the UI feels responsive.
+        // Also clear waitForStudent — the student is responding.
+        set((state) => {
+          const last = state.conversationHistory[state.conversationHistory.length - 1];
+          if (last?.role === "user" && last.content === msg.text) {
+            return { waitForStudent: false };
+          }
+          return {
+            conversationHistory: [
+              ...state.conversationHistory,
+              { role: "user", content: msg.text },
+            ],
+            waitForStudent: false,
+          };
+        });
+        break;
+
+      case "state_update":
+        set({ tutorMode: msg.tutor_state, waitForStudent: msg.wait_for_student });
         break;
 
       case "error":
@@ -143,4 +189,5 @@ export const useTutorSession = create<TutorSessionState>((set, get) => ({
         break;
     }
   },
-}));
+  };
+});

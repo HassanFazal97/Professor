@@ -46,6 +46,13 @@ export default function SessionControls() {
   };
 
   const toggleMute = () => {
+    if (adaSpeaking) {
+      // Explicit interrupt path: allows the student to cut Ada immediately,
+      // even though mic chunks are gated while Ada is speaking.
+      useTutorSession.getState().send({ type: "barge_in" });
+      if (!isListening) startListening();
+      return;
+    }
     isListening ? stopListening() : startListening();
   };
 
@@ -81,11 +88,16 @@ export default function SessionControls() {
           {/* Mic status / mute toggle */}
           <button
             onClick={toggleMute}
-            disabled={adaSpeaking}
-            title={adaSpeaking ? "Ada is speaking…" : isListening ? "Mute mic" : "Unmute mic"}
-            className={`flex w-full items-center justify-center gap-2 rounded-lg px-4 py-2 text-sm font-medium transition-all active:scale-95 disabled:cursor-not-allowed ${
+            title={
               adaSpeaking
-                ? "border border-blue-200 bg-blue-50 text-blue-400"
+                ? "Interrupt Ada and speak"
+                : isListening
+                  ? "Mute mic"
+                  : "Unmute mic"
+            }
+            className={`flex w-full items-center justify-center gap-2 rounded-lg px-4 py-2 text-sm font-medium transition-all active:scale-95 ${
+              adaSpeaking
+                ? "border border-amber-300 bg-amber-50 text-amber-700 hover:bg-amber-100"
                 : isListening
                   ? "bg-red-500 text-white hover:bg-red-600"
                   : "border border-gray-300 bg-white text-gray-500 hover:bg-gray-50"
@@ -105,8 +117,8 @@ export default function SessionControls() {
             </svg>
             {adaSpeaking ? (
               <span className="flex items-center gap-1.5">
-                <span className="inline-block h-2 w-2 animate-pulse rounded-full bg-blue-400" />
-                Ada is speaking…
+                <span className="inline-block h-2 w-2 animate-pulse rounded-full bg-amber-500" />
+                Interrupt Ada
               </span>
             ) : isListening ? (
               <span className="flex items-center gap-1.5">

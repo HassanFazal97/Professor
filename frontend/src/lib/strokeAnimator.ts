@@ -11,17 +11,19 @@ const DEFAULT_SPEED = 1.0; // points per frame multiplier
  *
  * @param ctx     2D canvas context to draw on
  * @param data    StrokeData from the backend
- * @param onDone  Callback invoked when all strokes finish animating
+ * @param onDone  Callback invoked when all strokes finish animating naturally
+ * @returns       A cancel function — call it to stop the animation immediately.
+ *                onDone is NOT called when cancelled.
  */
 export function animateStrokes(
   ctx: CanvasRenderingContext2D,
   data: StrokeData,
   onDone?: () => void,
-): void {
+): () => void {
   const { strokes, animation_speed } = data;
   if (!strokes.length) {
     onDone?.();
-    return;
+    return () => {};
   }
 
   // Flatten all strokes into an ordered animation queue
@@ -35,9 +37,12 @@ export function animateStrokes(
   }
 
   let index = 0;
+  let cancelled = false;
   const speed = animation_speed * DEFAULT_SPEED;
 
   const draw = () => {
+    if (cancelled) return; // stop without calling onDone
+
     // Draw multiple points per frame based on speed
     const pointsThisFrame = Math.max(1, Math.round(speed * 2));
 
@@ -72,4 +77,8 @@ export function animateStrokes(
   };
 
   requestAnimationFrame(draw);
+
+  return () => {
+    cancelled = true;
+  };
 }

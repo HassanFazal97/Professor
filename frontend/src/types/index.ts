@@ -35,7 +35,7 @@ export type ContentFormat = "text" | "latex";
 export interface WriteBoardAction {
   type: "write";
   content: string;
-  format: ContentFormat;
+  format?: ContentFormat;
   position: Position;
   color: string;
 }
@@ -77,6 +77,8 @@ export interface TranscriptMessage {
 export interface BoardSnapshotMessage {
   type: "board_snapshot";
   image_base64: string;
+  width?: number;
+  height?: number;
 }
 
 export interface AudioStartMessage {
@@ -92,13 +94,18 @@ export interface AudioStopMessage {
   type: "audio_stop";
 }
 
+export interface BargeInMessage {
+  type: "barge_in";
+}
+
 export type ClientMessage =
   | SessionStartMessage
   | TranscriptMessage
   | BoardSnapshotMessage
   | AudioStartMessage
   | AudioDataMessage
-  | AudioStopMessage;
+  | AudioStopMessage
+  | BargeInMessage;
 
 // Server → Client
 export interface ConnectedMessage {
@@ -136,6 +143,12 @@ export interface BargeinMessage {
   type: "barge_in";
 }
 
+export interface StateUpdateMessage {
+  type: "state_update";
+  tutor_state: TutorMode;
+  wait_for_student: boolean;
+}
+
 export interface ErrorMessage {
   type: "error";
   message: string;
@@ -149,4 +162,5 @@ export type ServerMessage =
   | BoardActionMessage
   | TranscriptInterimMessage
   | BargeinMessage
+  | StateUpdateMessage
   | ErrorMessage;

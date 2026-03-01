@@ -11,8 +11,9 @@ class AudioPlayer {
   private _ctx: AudioContext | null = null;
   private _queue: ArrayBuffer[] = [];
   private _playing = false;
+  private _currentSource: AudioBufferSourceNode | null = null;
 
-  /** Called when the last queued chunk finishes playing. */
+  /** Called when the last queued chunk finishes playing naturally. */
   onDrained?: () => void;
 
   /** Call this inside a click handler to unlock the AudioContext. */
@@ -34,9 +35,18 @@ class AudioPlayer {
     if (!this._playing) this._playNext();
   }
 
+  /** Immediately cut all audio and clear the queue. Does not fire onDrained. */
   stop(): void {
     this._queue = [];
     this._playing = false;
+    if (this._currentSource) {
+      try {
+        this._currentSource.stop();
+      } catch {
+        // source may have already ended
+      }
+      this._currentSource = null;
+    }
   }
 
   private _getCtx(): AudioContext {
@@ -49,6 +59,7 @@ class AudioPlayer {
   private _playNext(): void {
     if (this._queue.length === 0) {
       this._playing = false;
+      this._currentSource = null;
       this.onDrained?.();
       return;
     }
@@ -65,6 +76,7 @@ class AudioPlayer {
           const source = ctx.createBufferSource();
           source.buffer = audioBuffer;
           source.connect(ctx.destination);
+          this._currentSource = source;
           source.onended = () => this._playNext();
           source.start(0);
         },

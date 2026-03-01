@@ -7,8 +7,12 @@ interface WhiteboardState {
   strokeQueue: StrokeData[];
   pendingBoardActions: BoardAction[];
 
+  // The overlay canvas element — registered by WhiteboardOverlay on mount,
+  // read by Whiteboard.tsx when compositing snapshots.
+  overlayCanvas: HTMLCanvasElement | null;
+
   // Called by Whiteboard.tsx when a snapshot is ready
-  onSnapshotReady: (imageBase64: string) => void;
+  onSnapshotReady: (imageBase64: string, width: number, height: number) => void;
 
   // Called by WhiteboardOverlay after animation completes — advances the queue
   clearPendingStrokes: () => void;
@@ -21,16 +25,26 @@ interface WhiteboardState {
 
   // Called by Whiteboard.tsx after it processes the queue
   clearBoardActions: () => void;
+
+  // Called by WhiteboardOverlay to register/unregister its canvas
+  setOverlayCanvas: (canvas: HTMLCanvasElement | null) => void;
+
+  // Called on barge-in to stop the current animation and clear the queue
+  cancelStrokes: () => void;
+
+  // Called when a "clear" board action is received — wipes Ada's overlay canvas
+  clearOverlay: () => void;
 }
 
 export const useWhiteboard = create<WhiteboardState>((set, get) => ({
   pendingStrokes: null,
   strokeQueue: [],
   pendingBoardActions: [],
+  overlayCanvas: null,
 
-  onSnapshotReady: (imageBase64: string) => {
+  onSnapshotReady: (imageBase64: string, width: number, height: number) => {
     const { send } = useTutorSession.getState();
-    send({ type: "board_snapshot", image_base64: imageBase64 });
+    send({ type: "board_snapshot", image_base64: imageBase64, width, height });
   },
 
   // When the current animation finishes, dequeue the next stroke batch.
@@ -53,4 +67,18 @@ export const useWhiteboard = create<WhiteboardState>((set, get) => ({
     set((state) => ({ pendingBoardActions: [...state.pendingBoardActions, action] })),
 
   clearBoardActions: () => set({ pendingBoardActions: [] }),
+
+  setOverlayCanvas: (canvas) => set({ overlayCanvas: canvas }),
+
+  // Clear pending strokes and the queue — WhiteboardOverlay's cancelRef handles the RAF loop
+  cancelStrokes: () => set({ pendingStrokes: null, strokeQueue: [] }),
+
+  // Wipe Ada's handwriting off the overlay canvas (called on board "clear" action)
+  clearOverlay: () => {
+    const canvas = get().overlayCanvas;
+    if (canvas) {
+      const ctx = canvas.getContext("2d");
+      ctx?.clearRect(0, 0, canvas.width, canvas.height);
+    }
+  },
 }));

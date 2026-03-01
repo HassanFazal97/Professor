@@ -4,7 +4,7 @@ import { useEffect, useRef } from "react";
 import { useTutorSession } from "@/hooks/useTutorSession";
 
 export default function TutorPanel() {
-  const { tutorMode, conversationHistory, isConnected, adaSpeaking } = useTutorSession();
+  const { tutorMode, conversationHistory, isConnected, adaSpeaking, waitForStudent } = useTutorSession();
   const bottomRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -70,6 +70,10 @@ export default function TutorPanel() {
             ))}
             <span className="ml-2 text-xs text-blue-500">Ada is speaking</span>
           </div>
+        ) : waitForStudent ? (
+          <span className="text-xs font-medium text-green-600 animate-pulse">
+            ✏️ Your turn — show your work on the board
+          </span>
         ) : (
           <span className="text-xs text-gray-400">
             {isConnected ? "Your mic is live — just talk" : "Start a session to begin"}
@@ -84,7 +88,7 @@ export default function TutorPanel() {
             Say hello to Professor Ada to get started.
           </p>
         ) : (
-          conversationHistory.map((turn, i) => (
+          conversationHistory.filter(turn => turn.content !== "[checking my work on the board]").map((turn, i) => (
             <div
               key={i}
               className={`rounded-lg px-3 py-2 ${
