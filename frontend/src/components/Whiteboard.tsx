@@ -18,6 +18,8 @@ function toTldrawColor(hex: string): string {
   return HEX_TO_TLDRAW[hex.toUpperCase()] ?? "black";
 }
 
+const AI_SHAPE_META = { createdBy: "ai-tutor" };
+
 function applyBoardAction(editor: Editor, action: BoardAction): void {
   switch (action.type) {
     case "write": {
@@ -26,6 +28,7 @@ function applyBoardAction(editor: Editor, action: BoardAction): void {
           type: "text",
           x: action.position.x,
           y: action.position.y,
+          meta: AI_SHAPE_META,
           props: {
             text: action.content,
             color: toTldrawColor(action.color),
@@ -47,6 +50,7 @@ function applyBoardAction(editor: Editor, action: BoardAction): void {
           type: "geo",
           x,
           y: y + height,
+          meta: AI_SHAPE_META,
           props: {
             geo: "rectangle",
             w: width,
@@ -207,7 +211,11 @@ export default function Whiteboard() {
     if (now - lastSnapshotRef.current < SNAPSHOT_MIN_INTERVAL_MS) return;
     lastSnapshotRef.current = now;
     try {
-      const ids = [...editor.getCurrentPageShapeIds()];
+      const allIds = [...editor.getCurrentPageShapeIds()];
+      const ids = allIds.filter((id) => {
+        const shape = editor.getShape(id) as any;
+        return shape?.meta?.createdBy !== "ai-tutor";
+      });
       const overlayCanvas = useWhiteboard.getState().overlayCanvas;
 
       // Nothing to capture yet

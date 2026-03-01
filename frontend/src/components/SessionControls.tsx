@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useTutorSession } from "@/hooks/useTutorSession";
 import { useVoicePipeline } from "@/hooks/useVoicePipeline";
 import { audioPlayer } from "@/lib/audioPlayer";
@@ -17,14 +17,10 @@ const SUBJECTS = [
 
 export default function SessionControls() {
   const [selectedSubject, setSelectedSubject] = useState(SUBJECTS[0]);
+  const spaceHeldRef = useRef(false);
   const { isConnected, sessionId, startSession, endSession, adaSpeaking, setAdaSpeaking } =
     useTutorSession();
   const { startListening, stopListening, isListening } = useVoicePipeline();
-
-  // Auto-start mic the moment the session connects
-  useEffect(() => {
-    if (isConnected) startListening();
-  }, [isConnected]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // When Ada's audio finishes, clear the speaking flag (mic stays on the whole time)
   useEffect(() => {
@@ -45,16 +41,64 @@ export default function SessionControls() {
     endSession();
   };
 
-  const toggleMute = () => {
+  const beginPushToTalk = useCallback(() => {
+    if (!isConnected || isListening) return;
     if (adaSpeaking) {
-      // Explicit interrupt path: allows the student to cut Ada immediately,
-      // even though mic chunks are gated while Ada is speaking.
+      // Interrupt Ada first, then start capturing mic.
       useTutorSession.getState().send({ type: "barge_in" });
-      if (!isListening) startListening();
-      return;
     }
-    isListening ? stopListening() : startListening();
-  };
+    startListening();
+  }, [isConnected, isListening, adaSpeaking, startListening]);
+
+  const endPushToTalk = useCallback(() => {
+    if (!isListening) return;
+    stopListening();
+  }, [isListening, stopListening]);
+
+  useEffect(() => {
+    if (!isConnected) return;
+
+    const isEditableTarget = (target: EventTarget | null): boolean => {
+      if (!(target instanceof HTMLElement)) return false;
+      const tag = target.tagName.toLowerCase();
+      if (target.isContentEditable) return true;
+      return tag === "input" || tag === "textarea" || tag === "select";
+    };
+
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.code !== "Space") return;
+      if (e.repeat || spaceHeldRef.current) return;
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+      if (isEditableTarget(e.target)) return;
+      e.preventDefault();
+      spaceHeldRef.current = true;
+      beginPushToTalk();
+    };
+
+    const onKeyUp = (e: KeyboardEvent) => {
+      if (e.code !== "Space") return;
+      if (!spaceHeldRef.current) return;
+      e.preventDefault();
+      spaceHeldRef.current = false;
+      endPushToTalk();
+    };
+
+    const onBlur = () => {
+      if (!spaceHeldRef.current) return;
+      spaceHeldRef.current = false;
+      endPushToTalk();
+    };
+
+    window.addEventListener("keydown", onKeyDown);
+    window.addEventListener("keyup", onKeyUp);
+    window.addEventListener("blur", onBlur);
+
+    return () => {
+      window.removeEventListener("keydown", onKeyDown);
+      window.removeEventListener("keyup", onKeyUp);
+      window.removeEventListener("blur", onBlur);
+    };
+  }, [isConnected, beginPushToTalk, endPushToTalk]);
 
   return (
     <div className="space-y-3">
@@ -85,22 +129,23 @@ export default function SessionControls() {
             <span className="font-mono">{sessionId?.slice(0, 8)}…</span>
           </div>
 
-          {/* Mic status / mute toggle */}
+          {/* Push-to-talk */}
           <button
-            onClick={toggleMute}
+            onPointerDown={beginPushToTalk}
+            onPointerUp={endPushToTalk}
+            onPointerCancel={endPushToTalk}
+            onPointerLeave={endPushToTalk}
             title={
               adaSpeaking
                 ? "Interrupt Ada and speak"
-                : isListening
-                  ? "Mute mic"
-                  : "Unmute mic"
+                : "Hold to talk"
             }
-            className={`flex w-full items-center justify-center gap-2 rounded-lg px-4 py-2 text-sm font-medium transition-all active:scale-95 ${
+            className={`flex w-full items-center justify-center gap-2 rounded-lg px-4 py-2 text-sm font-medium transition-all ${
               adaSpeaking
-                ? "border border-amber-300 bg-amber-50 text-amber-700 hover:bg-amber-100"
+                ? "border border-amber-300 bg-amber-50 text-amber-700"
                 : isListening
-                  ? "bg-red-500 text-white hover:bg-red-600"
-                  : "border border-gray-300 bg-white text-gray-500 hover:bg-gray-50"
+                  ? "bg-green-600 text-white"
+                  : "border border-gray-300 bg-white text-gray-600 hover:bg-gray-50"
             }`}
           >
             <svg
@@ -118,15 +163,15 @@ export default function SessionControls() {
             {adaSpeaking ? (
               <span className="flex items-center gap-1.5">
                 <span className="inline-block h-2 w-2 animate-pulse rounded-full bg-amber-500" />
-                Interrupt Ada
+                Hold to interrupt + talk
               </span>
             ) : isListening ? (
               <span className="flex items-center gap-1.5">
                 <span className="inline-block h-2 w-2 animate-pulse rounded-full bg-white" />
-                Listening — tap to mute
+                Listening... release to send
               </span>
             ) : (
-              "Tap to unmute"
+              "Hold Space (or hold button) to talk"
             )}
           </button>
 

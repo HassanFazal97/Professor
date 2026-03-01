@@ -76,7 +76,7 @@ export default function TutorPanel() {
           </span>
         ) : (
           <span className="text-xs text-gray-400">
-            {isConnected ? "Your mic is live — just talk" : "Start a session to begin"}
+            {isConnected ? "Hold Space or the button to talk" : "Start a session to begin"}
           </span>
         )}
       </div>

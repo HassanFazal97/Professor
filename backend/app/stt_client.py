@@ -82,21 +82,36 @@ class STTClient:
                     recv_task = asyncio.create_task(
                         self._recv_messages(dg_ws, on_final_transcript, on_speech_start)
                     )
-                    # Wait until either side finishes, then cancel the other.
-                    # asyncio.gather doesn't cancel siblings on normal return, which
-                    # causes _send_audio to keep writing to a Deepgram WS that has
-                    # already closed — hence "Cannot write to closing transport".
+                    # Wait until either side finishes.
                     done, pending = await asyncio.wait(
                         [send_task, recv_task],
                         return_when=asyncio.FIRST_COMPLETED,
                     )
-                    for task in pending:
-                        task.cancel()
+
+                    # If send finished first because we sent CloseStream (PTT release),
+                    # keep recv alive briefly so Deepgram can deliver final Results.
+                    send_finished = send_task in done and not send_task.cancelled()
+                    send_exc = send_task.exception() if send_finished else None
+                    if send_finished and send_exc is None and recv_task in pending:
                         try:
-                            await task
+                            await asyncio.wait_for(recv_task, timeout=1.5)
+                        except asyncio.TimeoutError:
+                            recv_task.cancel()
+                            try:
+                                await recv_task
+                            except (asyncio.CancelledError, Exception):
+                                pass
                         except (asyncio.CancelledError, Exception):
                             pass
-                    # Surface any real exception from the finished task
+                    else:
+                        for task in pending:
+                            task.cancel()
+                            try:
+                                await task
+                            except (asyncio.CancelledError, Exception):
+                                pass
+
+                    # Surface any real exception from the finished tasks
                     for task in done:
                         if not task.cancelled():
                             exc = task.exception()

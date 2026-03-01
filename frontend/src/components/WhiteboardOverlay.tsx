@@ -4,7 +4,7 @@ import { useEffect, useRef } from "react";
 import { useWhiteboard } from "@/hooks/useWhiteboard";
 import type { Stroke, StrokeData } from "@/types";
 
-const JITTER_PX = 1;
+const JITTER_PX = 0.35;
 const DEFAULT_SPEED = 1.0;
 
 const HEX_TO_TLDRAW_COLOR: Record<string, "black" | "blue" | "red" | "green"> = {
@@ -18,11 +18,52 @@ function toTldrawColor(hex: string): "black" | "blue" | "red" | "green" {
   return HEX_TO_TLDRAW_COLOR[(hex || "").toUpperCase()] ?? "black";
 }
 
-function toTldrawSize(width: number): "s" | "m" | "l" | "xl" {
-  if (width <= 1.7) return "s";
-  if (width <= 2.6) return "m";
-  if (width <= 3.8) return "l";
-  return "xl";
+const AI_SHAPE_META = { createdBy: "ai-tutor" };
+
+function toTldrawSize(_width: number): "s" {
+  // Force the thinnest pen size for legibility.
+  return "s";
+}
+
+function sizeToRenderWidth(size: "s" | "m" | "l" | "xl"): number {
+  switch (size) {
+    case "s":
+      return 1.2;
+    case "m":
+      return 1.6;
+    case "l":
+      return 2.2;
+    case "xl":
+      return 2.8;
+  }
+}
+
+function simplifyStrokePoints(
+  points: Array<{ x: number; y: number; pressure: number }>,
+): Array<{ x: number; y: number; pressure: number }> {
+  if (points.length <= 2) return points;
+
+  const simplified: Array<{ x: number; y: number; pressure: number }> = [points[0]];
+  let prev = points[0];
+
+  // Keep points only when they move enough in page space.
+  // This prevents dense point clouds from producing "paint blob" letters.
+  const MIN_DIST = 1.9;
+  const MIN_DIST_SQ = MIN_DIST * MIN_DIST;
+
+  for (let i = 1; i < points.length - 1; i++) {
+    const p = points[i];
+    const dx = p.x - prev.x;
+    const dy = p.y - prev.y;
+    const distSq = dx * dx + dy * dy;
+    if (distSq >= MIN_DIST_SQ) {
+      simplified.push(p);
+      prev = p;
+    }
+  }
+
+  simplified.push(points[points.length - 1]);
+  return simplified;
 }
 
 /**
@@ -50,29 +91,35 @@ export default function WhiteboardOverlay() {
 
     for (const stroke of batch.strokes) {
       if (!stroke.points.length) continue;
+      const simplifiedPoints = simplifyStrokePoints(stroke.points);
+      if (simplifiedPoints.length < 2) continue;
+
       let minX = Number.POSITIVE_INFINITY;
       let minY = Number.POSITIVE_INFINITY;
-      for (const p of stroke.points) {
+      for (const p of simplifiedPoints) {
         minX = Math.min(minX, p.x);
         minY = Math.min(minY, p.y);
       }
       if (!Number.isFinite(minX) || !Number.isFinite(minY)) continue;
 
-      const segmentPoints = stroke.points.map((p) => ({
+      const segmentPoints = simplifiedPoints.map((p) => ({
         x: p.x - minX,
         y: p.y - minY,
-        z: p.pressure,
+        // Lower pressure -> thinner stroke envelope in tldraw's draw shape.
+        z: Math.max(0.18, Math.min(0.38, p.pressure * 0.45)),
       }));
 
+      const size = toTldrawSize(stroke.width);
       shapes.push({
         type: "draw",
         x: minX,
         y: minY,
+        meta: AI_SHAPE_META,
         props: {
           color: toTldrawColor(stroke.color),
           fill: "none",
           dash: "draw",
-          size: toTldrawSize(stroke.width),
+          size,
           segments: [{ type: "free", points: segmentPoints }],
           isComplete: true,
           isClosed: false,
@@ -123,6 +170,8 @@ export default function WhiteboardOverlay() {
     const drawStrokeBatch = (batch: StrokeData) => {
       for (const stroke of batch.strokes) {
         if (!stroke.points.length) continue;
+        const size = toTldrawSize(stroke.width);
+        const baseWidth = sizeToRenderWidth(size);
         ctx.beginPath();
         let started = false;
 
@@ -145,7 +194,9 @@ export default function WhiteboardOverlay() {
           const x = screen.x + j.x;
           const y = screen.y + j.y;
 
-          ctx.lineWidth = stroke.width * (0.8 + p.pressure * 0.4);
+          // Match tldraw-like pen thickness during animation so the transition
+          // to committed draw shapes is visually consistent.
+          ctx.lineWidth = baseWidth * (0.94 + p.pressure * 0.12);
           ctx.strokeStyle = stroke.color;
           ctx.lineCap = "round";
           ctx.lineJoin = "round";
