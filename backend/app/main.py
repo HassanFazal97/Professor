@@ -58,9 +58,11 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
             await orchestrator.handle_message(data)
     except WebSocketDisconnect:
         print(f"Session {session_id} disconnected")
+        orchestrator.cleanup()
         sessions.pop(session_id, None)
     except Exception as e:
         print(f"Error in session {session_id}: {e}")
+        orchestrator.cleanup()
         # WebSocket close reason has a 123-byte hard limit — truncate to be safe
         await websocket.close(code=1011, reason=str(e)[:100])
         sessions.pop(session_id, None)

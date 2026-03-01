@@ -1,5 +1,6 @@
 import os
 import ssl
+from collections.abc import AsyncIterator
 
 import aiohttp
 import certifi
@@ -27,15 +28,22 @@ class TTSClient:
 
         try:
             chunks: list[bytes] = []
-            async for chunk in self._stream(text):
+            async for chunk in self.stream(text):
                 chunks.append(chunk)
             return b"".join(chunks)
         except Exception as e:
             print(f"TTS error: {e}")
             return b""
 
-    async def _stream(self, text: str):
-        """POST to ElevenLabs streaming endpoint and yield raw mp3 chunks."""
+    async def stream(self, text: str) -> AsyncIterator[bytes]:
+        """
+        Stream mp3 bytes from ElevenLabs as they arrive.
+
+        Yields nothing when TTS is disabled or text is empty.
+        """
+        if not self.enabled or not text.strip():
+            return
+
         url = f"{ELEVENLABS_API_URL}/{self.voice_id}/stream"
         headers = {
             "xi-api-key": self.api_key,
@@ -56,4 +64,5 @@ class TTSClient:
             async with session.post(url, headers=headers, json=payload) as resp:
                 resp.raise_for_status()
                 async for chunk in resp.content.iter_chunked(4096):
-                    yield chunk
+                    if chunk:
+                        yield chunk

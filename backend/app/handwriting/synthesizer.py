@@ -17,7 +17,8 @@ _FONT_URL = (
 _FONT_PATH = Path(__file__).parent / "Caveat-Regular.ttf"
 
 # How tall capital letters should appear on the whiteboard canvas (px).
-_TARGET_CAP_HEIGHT_PX = 38
+# 26px gives a fine pen-line feel; 38px was too chunky/chalk-like.
+_TARGET_CAP_HEIGHT_PX = 26
 
 
 # ── Wire-format dataclasses (must match frontend StrokeData type) ─────────────
@@ -295,7 +296,7 @@ class HandwritingSynthesizer:
                         )
                     )
 
-                strokes.append(Stroke(points=points, color=color, width=2.0))
+                strokes.append(Stroke(points=points, color=color, width=1.5))
 
             x_cursor += advance * scale
 

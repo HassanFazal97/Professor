@@ -16,8 +16,13 @@ DEEPGRAM_WS_URL = "wss://api.deepgram.com/v1/listen"
 # Genuine speech from Nova-2 is usually > 0.8; background noise is much lower.
 MIN_CONFIDENCE = 0.60
 
-# Minimum number of words — filters out single-word ghost transcripts from noise.
-MIN_WORDS = 3
+# Minimum number of words.
+# Keep this at 1 so natural interjections ("yes", "wait", "no") are not dropped.
+MIN_WORDS = 1
+
+# For single-word transcripts, require higher confidence to reduce false
+# barge-ins from background noise and speaker bleed.
+MIN_SINGLE_WORD_CONFIDENCE = 0.82
 
 
 class STTClient:
@@ -73,10 +78,30 @@ class STTClient:
             connector = aiohttp.TCPConnector(ssl=_SSL_CTX)
             async with aiohttp.ClientSession(connector=connector) as session:
                 async with session.ws_connect(self.build_url(), headers=headers) as dg_ws:
-                    await asyncio.gather(
-                        self._send_audio(dg_ws, audio_queue),
-                        self._recv_messages(dg_ws, on_final_transcript, on_speech_start),
+                    send_task = asyncio.create_task(self._send_audio(dg_ws, audio_queue))
+                    recv_task = asyncio.create_task(
+                        self._recv_messages(dg_ws, on_final_transcript, on_speech_start)
                     )
+                    # Wait until either side finishes, then cancel the other.
+                    # asyncio.gather doesn't cancel siblings on normal return, which
+                    # causes _send_audio to keep writing to a Deepgram WS that has
+                    # already closed — hence "Cannot write to closing transport".
+                    done, pending = await asyncio.wait(
+                        [send_task, recv_task],
+                        return_when=asyncio.FIRST_COMPLETED,
+                    )
+                    for task in pending:
+                        task.cancel()
+                        try:
+                            await task
+                        except (asyncio.CancelledError, Exception):
+                            pass
+                    # Surface any real exception from the finished task
+                    for task in done:
+                        if not task.cancelled():
+                            exc = task.exception()
+                            if exc is not None:
+                                raise exc
         except Exception as e:
             import traceback
             print(f"STT stream error: {e}")
@@ -85,8 +110,25 @@ class STTClient:
     async def _send_audio(
         self, dg_ws: aiohttp.ClientWebSocketResponse, audio_queue: asyncio.Queue
     ) -> None:
+        # Deepgram closes streaming connections after ~10 s of silence.
+        # We send a KeepAlive JSON message every 8 s when no audio arrives so
+        # the connection stays open while Ada is speaking (audio is gated
+        # client-side during that window to prevent echo).
+        _KEEPALIVE_INTERVAL = 8.0
+
         while True:
-            chunk = await audio_queue.get()
+            try:
+                chunk = await asyncio.wait_for(
+                    audio_queue.get(), timeout=_KEEPALIVE_INTERVAL
+                )
+            except asyncio.TimeoutError:
+                # No audio chunk arrived — ping Deepgram to prevent idle timeout
+                try:
+                    await dg_ws.send_str(json.dumps({"type": "KeepAlive"}))
+                except Exception:
+                    break  # Deepgram WS already closed; exit cleanly
+                continue
+
             if chunk is None:
                 await dg_ws.send_str(json.dumps({"type": "CloseStream"}))
                 break
@@ -139,6 +181,13 @@ class STTClient:
             # Filter noise: too low confidence or too few words
             word_count = len(transcript.split())
             if confidence < MIN_CONFIDENCE or word_count < MIN_WORDS:
+                print(
+                    f"STT filtered: {transcript!r} "
+                    f"(confidence={confidence:.2f}, words={word_count})"
+                )
+                continue
+
+            if word_count == 1 and confidence < MIN_SINGLE_WORD_CONFIDENCE:
                 print(
                     f"STT filtered: {transcript!r} "
                     f"(confidence={confidence:.2f}, words={word_count})"
