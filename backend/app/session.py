@@ -28,33 +28,36 @@ class TutorSession:
     student_progress: dict = field(default_factory=dict)
     is_active: bool = False
 
-    # Tracks how far down the canvas Ada has written, so the LLM knows where
-    # free space is.  Updated by the orchestrator after each set of write actions.
-    # 0 means the board is blank (nothing written yet).
-    board_next_y: int = 0
-    board_next_x: int = 80
+    # Tracks how far down the canvas Ada has written so the orchestrator
+    # knows where free space starts. 0 means the board is blank.
+    # All y-values are in world (page) coordinates.
+    board_next_y: int = 0          # world y of Ada's writing cursor
+    board_viewport_y: int = 0      # world y of top of current visible viewport
+    student_content_bottom_y: int = 0  # world y of bottommost student content
     board_width: int = 1200
     board_height: int = 700
 
     def get_board_state_context(self) -> str:
         """
         Return a short note for the LLM describing the current whiteboard state.
-        Injected into the last user message before each LLM call so Ada knows
-        the board status. Positioning is handled automatically by the orchestrator,
-        so Ada does not need to calculate y-offsets herself.
+        Vertical placement is handled automatically by the orchestrator —
+        Ada always uses y=140 as her starting y.
         """
-        if self.board_next_y == 0:
+        if self.board_next_y == 0 and self.board_viewport_y == 0:
             return ""
-        space_left = self.board_height - self.board_next_y
+        # Convert world cursor to viewport-relative position for space calculation.
+        effective_y = max(0, self.board_next_y - self.board_viewport_y)
+        if effective_y == 0:
+            return ""
+        space_left = self.board_height - effective_y
         if space_left < 150:
             return (
-                "[Whiteboard: board is nearly full. "
-                "It will auto-clear when you next draw — write at your normal starting positions.]"
+                "[Whiteboard: nearly full — board will auto-scroll on your next write. "
+                "Write at your normal starting position x=80, y=140.]"
             )
         return (
-            f"[Whiteboard: has existing content. "
-            f"Your board_actions will be placed below it automatically — "
-            f"always use x=80, y=140 as your starting position as normal.]"
+            "[Whiteboard: has existing content. Your writing will be placed below it "
+            "automatically — always use x=80, y=140 as your starting position.]"
         )
 
     def add_user_turn(self, text: str, timestamp: float = 0.0) -> None:

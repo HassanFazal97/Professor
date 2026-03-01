@@ -79,6 +79,7 @@ export interface BoardSnapshotMessage {
   image_base64: string;
   width?: number;
   height?: number;
+  student_max_y?: number; // world y of the bottommost student shape (for overlap avoidance)
 }
 
 export interface AudioStartMessage {
@@ -149,6 +150,11 @@ export interface StateUpdateMessage {
   wait_for_student: boolean;
 }
 
+export interface ScrollBoardMessage {
+  type: "scroll_board";
+  scroll_by: number; // pixels to pan the camera down in world coordinates
+}
+
 export interface ErrorMessage {
   type: "error";
   message: string;
@@ -163,4 +169,5 @@ export type ServerMessage =
   | TranscriptInterimMessage
   | BargeinMessage
   | StateUpdateMessage
+  | ScrollBoardMessage
   | ErrorMessage;

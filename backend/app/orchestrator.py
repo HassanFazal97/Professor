@@ -75,6 +75,9 @@ class Orchestrator:
         self._stt_buffer: list[str] = []
         self._stt_flush_task: asyncio.Task | None = None
 
+        # Horizontal anchor for AI writing (world/page coordinates).
+        self._write_start_x: float = float(os.getenv("BOARD_WRITE_X", "20"))
+
     def cleanup(self) -> None:
         """
         Cancel any background tasks when the client WebSocket closes.
@@ -98,7 +101,7 @@ class Orchestrator:
             {
                 "type": "connected",
                 "session_id": self.session.session_id,
-                "message": "Connected to AI Tutor. Say hello to Professor Ada!",
+                "message": "Connected to AI Tutor. Say hello to Professor KIA!",
             }
         )
 
@@ -127,14 +130,14 @@ class Orchestrator:
     # ── Session / LLM ────────────────────────────────────────────────────────
 
     async def _handle_session_start(self, data: dict) -> None:
-        self.session.current_subject = data.get("subject", "")
+        self.session.current_subject = ""
         self.session.is_active = True
         self.session.tutor_mode = "listening"
         self._last_interaction_at = time.time()
 
-        subject_label = self.session.current_subject or "whatever I need"
+        # Seed turn so Ada opens with a natural greeting and asks what help is needed.
         self.session.add_user_turn(
-            f"Hey, let's work on {subject_label}.",
+            "[Session started. Greet me naturally and ask what I need help with today.]",
             time.time(),
         )
 
@@ -205,6 +208,14 @@ class Orchestrator:
             self.session.board_width = int(width)
         if isinstance(height, (int, float)) and height > 200:
             self.session.board_height = int(height)
+
+        # Track where the student has drawn so Ada can avoid writing on top.
+        student_max_y = data.get("student_max_y")
+        if isinstance(student_max_y, (int, float)) and student_max_y > 0:
+            self.session.student_content_bottom_y = max(
+                self.session.student_content_bottom_y, int(student_max_y)
+            )
+
         self.session.add_board_snapshot(image_b64, time.time())
         await self.websocket.send_json(
             {"type": "snapshot_received", "count": len(self.session.board_snapshots)}
@@ -460,7 +471,7 @@ class Orchestrator:
         usable_width = max(360, self.session.board_width - 160)
         # Caveat handwriting averages roughly 12-14 px per character.
         chars_per_line = max(18, min(80, int(usable_width / 13)))
-        line_step = 52
+        line_step = 62
 
         normalized: list = []
         for action in board_actions:
@@ -475,14 +486,13 @@ class Orchestrator:
 
             pos = action.get("position")
             if isinstance(pos, dict):
-                base_x = float(pos.get("x", 80))
+                base_x = float(pos.get("x", 20))
                 base_y = float(pos.get("y", 140))
             else:
-                base_x, base_y = 80.0, 140.0
+                base_x, base_y = 20.0, 140.0
 
-            # Keep x within visible board bounds.
-            max_x = max(80.0, float(self.session.board_width - 220))
-            base_x = min(max(20.0, base_x), max_x)
+            # Always write from the left edge; ignore any x the LLM provided.
+            base_x = self._write_start_x
 
             logical_lines = [ln.strip() for ln in content.splitlines() if ln.strip()]
             if not logical_lines:
@@ -515,12 +525,21 @@ class Orchestrator:
 
     def _rebase_board_actions(self, board_actions: list) -> list:
         """
-        Shift write-action y-coordinates so new content starts below Ada's
-        existing writing, regardless of what y-coords the LLM picked.
-        Prepends a 'clear' action when the remaining canvas space is too small.
+        Shift write-action y-coordinates (which the LLM always gives as
+        viewport-relative) into world (page) coordinates, placing new content
+        below both Ada's previous writing AND any student shapes on the canvas.
+
+        When the remaining space in the current viewport is too small, a
+        'scroll_board' sentinel is prepended instead of clearing — the frontend
+        will pan the camera down to reveal fresh blank space below.
         """
         write_actions = [a for a in board_actions if a.get("type") == "write"]
-        if not write_actions or self.session.board_next_y == 0:
+        if not write_actions:
+            return board_actions
+
+        # On a completely fresh canvas (no prior writing, no scroll) let the LLM's
+        # y=140 stand as-is; no translation needed.
+        if self.session.board_next_y == 0 and self.session.board_viewport_y == 0:
             return board_actions
 
         ys = [
@@ -532,52 +551,122 @@ class Orchestrator:
         if not ys:
             return board_actions
 
-        min_y = min(ys)
-        target_y = self.session.board_next_y + 20  # 20px gap after existing content
-
-        # LLM already placed content below the cursor — no rebasing needed
-        if min_y >= target_y:
-            return board_actions
-
+        min_y = min(ys)  # smallest LLM y (viewport-relative, usually 140)
         content_height = max(ys) - min_y
 
-        # Canvas can't fit the new block — auto-clear and start fresh
-        board_limit_y = max(280, self.session.board_height - 20)
-        if target_y + content_height > board_limit_y:
-            self.session.board_next_y = 0
-            self.session.board_next_x = 80
-            return [{"type": "clear"}, *board_actions]
+        # The "cursor" is the lowest world-y where any content (Ada's or the
+        # student's) currently lives.  We start Ada's next write below it.
+        effective_cursor_world_y = max(
+            self.session.board_next_y,
+            self.session.student_content_bottom_y,
+        )
+        # Clamp so we never start above the standard top margin of the current page.
+        viewport_start_y = self.session.board_viewport_y + 140
+        target_world_y = max(effective_cursor_world_y + 20, viewport_start_y)
 
-        # Shift all write-action y-coordinates down by the required offset
-        offset = int(target_y - min_y)
+        # Check if this placement fits inside the current visible page.
+        board_limit_y = self.session.board_viewport_y + self.session.board_height - 20
+        if target_world_y + content_height > board_limit_y:
+            # Not enough room — scroll down one full board-height.
+            scroll_by = self.session.board_height
+            self.session.board_viewport_y += scroll_by
+            self.session.board_next_y = self.session.board_viewport_y
+            self.session.student_content_bottom_y = 0  # fresh page
+
+            new_target_world_y = self.session.board_viewport_y + 140
+            new_offset = int(new_target_world_y - min_y)
+
+            result: list = [{"type": "scroll_board", "scroll_by": scroll_by}]
+            for action in board_actions:
+                if action.get("type") == "write" and isinstance(action.get("position"), dict):
+                    action = dict(action, position={
+                        "x": self._write_start_x,  # always left-aligned
+                        "y": action["position"]["y"] + new_offset,
+                    })
+                result.append(action)
+            return result
+
+        # Normal rebase: translate LLM y-values to world coordinates.
+        if min_y >= target_world_y:
+            # LLM's y already lands in the right place (no shift needed).
+            return board_actions
+
+        offset = int(target_world_y - min_y)
         result = []
         for action in board_actions:
             if action.get("type") == "write" and isinstance(action.get("position"), dict):
                 action = dict(action, position={
-                    "x": action["position"].get("x", 80),
+                    "x": self._write_start_x,  # always left-aligned
                     "y": action["position"]["y"] + offset,
                 })
             result.append(action)
         return result
 
-    def _update_board_cursor(self, board_actions: list) -> None:
+    def _stroke_payload_bottom_y(self, payload: dict) -> int | None:
         """
-        After Ada writes, record the lowest y-coordinate used so the orchestrator
-        knows where free space starts for the next response.
-        Handles 'clear' inline (resets the cursor, then continues scanning writes).
+        Return the rendered bottom y-coordinate for a synthesized stroke payload.
+        Uses the real stroke points instead of fixed per-line estimates so
+        larger LaTeX/text glyphs cannot collide with the next write block.
+        """
+        strokes = payload.get("strokes")
+        if not isinstance(strokes, list):
+            return None
+
+        max_y: float | None = None
+        for stroke in strokes:
+            if not isinstance(stroke, dict):
+                continue
+            pts = stroke.get("points")
+            if not isinstance(pts, list):
+                continue
+            for pt in pts:
+                if not isinstance(pt, dict):
+                    continue
+                y = pt.get("y")
+                if isinstance(y, (int, float)):
+                    max_y = y if max_y is None else max(max_y, float(y))
+
+        if max_y is None:
+            return None
+        # Keep a clear visual gap before the next write starts.
+        return int(max_y) + 28
+
+    def _update_board_cursor(self, sent_items: list[tuple[str, dict, dict]]) -> None:
+        """
+        After KIA writes, record the lowest y-coordinate used so the next
+        response knows where free space starts.
+
+        sent_items are tuples of: (message_type, payload, original_action).
+        'scroll_board' resets are already applied inside _rebase_board_actions,
+        so we only need to advance the cursor for actual write actions here.
         """
         max_y = self.session.board_next_y
-        for action in board_actions:
-            if action.get("type") == "clear":
-                max_y = 0
-                self.session.board_next_x = 80
-            elif action.get("type") == "write":
-                pos = action.get("position", {})
-                if isinstance(pos, dict):
-                    y = pos.get("y", 0)
-                    if isinstance(y, (int, float)):
-                        # 50px accounts for ~26px cap height + line spacing
-                        max_y = max(max_y, int(y) + 50)
+        for msg_type, payload, action in sent_items:
+            action_type = action.get("type")
+
+            if action_type in ("clear", "scroll_board"):
+                # State already updated by _rebase_board_actions or by the
+                # board_action handler on the frontend (clear resets canvas).
+                # Reflect whatever the session now records.
+                max_y = self.session.board_next_y
+                continue
+
+            if action_type != "write":
+                continue
+
+            # Primary: use rendered stroke bounds when available.
+            if msg_type == "strokes":
+                rendered_bottom = self._stroke_payload_bottom_y(payload)
+                if rendered_bottom is not None:
+                    max_y = max(max_y, rendered_bottom)
+                    continue
+
+            # Fallback for text actions without stroke payloads.
+            pos = action.get("position", {})
+            if isinstance(pos, dict):
+                y = pos.get("y", 0)
+                if isinstance(y, (int, float)):
+                    max_y = max(max_y, int(y) + 76)
         self.session.board_next_y = max_y
 
     # ── LLM response dispatch ────────────────────────────────────────────────
@@ -678,6 +767,9 @@ class Orchestrator:
                         ),
                     )
                 pending.append(("strokes", stroke_data.to_dict()))
+            elif action.get("type") == "scroll_board":
+                # Pass the sentinel through — handled separately when sending.
+                pending.append(("scroll_board", action))
             else:
                 pending.append(("board_action", action))
 
@@ -709,18 +801,24 @@ class Orchestrator:
         # ── Step 4: Send strokes right after → writing begins while Ada talks ─
         # Stop early if the user barged in; track only the actions actually sent
         # so the board cursor reflects what was genuinely drawn.
-        sent_actions: list = []
+        sent_items: list[tuple[str, dict, dict]] = []
         for (msg_type, payload), action in zip(pending, board_actions):
             if self._interrupted:
                 break  # student is speaking — drop remaining strokes
             if msg_type == "strokes":
                 await self.websocket.send_json({"type": "strokes", "strokes": payload})
+            elif msg_type == "scroll_board":
+                # Tell the frontend to pan the camera down; no canvas content to send.
+                await self.websocket.send_json({
+                    "type": "scroll_board",
+                    "scroll_by": payload.get("scroll_by", self.session.board_height),
+                })
             else:
                 await self.websocket.send_json({"type": "board_action", "action": payload})
-            sent_actions.append(action)
+            sent_items.append((msg_type, payload, action))
 
         # Update board cursor only for actions that were actually drawn.
-        self._update_board_cursor(sent_actions)
+        self._update_board_cursor(sent_items)
 
         # Notify the frontend of the final tutor state and whether to wait for
         # the student (so the UI can show a "your turn" cue).
