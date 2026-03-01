@@ -170,7 +170,11 @@ When a student draws silently (no speech for 4s, no analysis for 15s), `_handle_
 | `ELEVENLABS_VOICE_ID` | *(optional)* Override TTS voice (default: Rachel) |
 | `LLM_MODEL` | *(optional)* Override LLM model (default: `claude-haiku-4-5-20251001`, use `claude-sonnet-4-5` for demo quality) |
 | `LATEX_RENDER_URL` | *(optional)* Local LaTeX SVG renderer URL (default: `http://localhost:3001/mathjax`) |
+| `LATEX_TARGET_HEIGHT_PX` | *(optional)* Visual height target for LaTeX strokes (default: `34`) |
+| `LATEX_TARGET_HEIGHT_MIN_PX` | *(optional)* Minimum adaptive LaTeX height (default: `28`) |
+| `LATEX_TARGET_HEIGHT_MAX_PX` | *(optional)* Maximum adaptive LaTeX height (default: `44`) |
 | `ECHO_COOLDOWN_SEC` | *(optional)* Echo suppression window for STT transcripts |
 | `AUTO_BARGE_DEBOUNCE_SEC` | *(optional)* Min interval between auto barge-ins |
 | `BARGE_START_GUARD_SEC` | *(optional)* Ignore SpeechStarted right after TTS begins |
 | `AUTO_BARGE_CONFIRM_WINDOW_SEC` | *(optional)* Max delay to confirm SpeechStarted with a transcript |
+| `STT_MERGE_WINDOW_SEC` | *(optional)* Merge adjacent final STT chunks into one utterance (default: `0.8`) |

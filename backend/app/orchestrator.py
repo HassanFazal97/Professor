@@ -67,6 +67,14 @@ class Orchestrator:
         self._last_analysis_at: float = 0.0
         self._wait_for_student: bool = False
 
+        # STT utterance assembly:
+        # Deepgram can emit multiple final chunks for one human sentence.
+        # Buffer and merge adjacent chunks briefly so Ada responds to the
+        # complete thought instead of cutting off mid-question.
+        self._stt_merge_window_sec: float = float(os.getenv("STT_MERGE_WINDOW_SEC", "0.8"))
+        self._stt_buffer: list[str] = []
+        self._stt_flush_task: asyncio.Task | None = None
+
     def cleanup(self) -> None:
         """
         Cancel any background tasks when the client WebSocket closes.
@@ -75,6 +83,8 @@ class Orchestrator:
         """
         if self._stt_task and not self._stt_task.done():
             self._stt_task.cancel()
+        if self._stt_flush_task and not self._stt_flush_task.done():
+            self._stt_flush_task.cancel()
         # Drain the audio queue with a sentinel so _send_audio exits cleanly
         if self._audio_queue is not None:
             try:
@@ -327,6 +337,8 @@ class Orchestrator:
         if self._audio_queue is not None:
             await self._audio_queue.put(None)  # sentinel
             self._audio_queue = None
+        # Flush any buffered final transcript when mic streaming stops.
+        await self._flush_stt_buffer()
 
     async def _emit_barge_in(self) -> None:
         self._interrupted = True
@@ -386,9 +398,31 @@ class Orchestrator:
             print(f"STT echo suppressed ({elapsed:.2f}s after TTS): {text!r}")
             return
 
+        # Merge adjacent final chunks into one utterance.
+        self._stt_buffer.append(text.strip())
+        if self._stt_flush_task and not self._stt_flush_task.done():
+            self._stt_flush_task.cancel()
+        self._stt_flush_task = asyncio.create_task(self._flush_stt_buffer_after_delay())
+
+    async def _flush_stt_buffer_after_delay(self) -> None:
         try:
-            await self.websocket.send_json({"type": "transcript_interim", "text": text})
-            asyncio.create_task(self._handle_transcript({"text": text}))
+            await asyncio.sleep(self._stt_merge_window_sec)
+            await self._flush_stt_buffer()
+        except asyncio.CancelledError:
+            return
+
+    async def _flush_stt_buffer(self) -> None:
+        parts = [p for p in self._stt_buffer if p]
+        if not parts:
+            return
+        self._stt_buffer = []
+        merged = " ".join(parts).strip()
+        if not merged:
+            return
+
+        try:
+            await self.websocket.send_json({"type": "transcript_interim", "text": merged})
+            asyncio.create_task(self._handle_transcript({"text": merged}))
         except Exception:
             # WebSocket already closed — discard silently
             pass
@@ -629,10 +663,12 @@ class Orchestrator:
                     position = {"x": 100, "y": 100}
 
                 if content_format == "latex":
+                    max_width = max(240.0, float(self.session.board_width - 180))
                     stroke_data = await self.latex.convert(
                         latex=text_content,
                         color=action.get("color", "#000000"),
                         position=position,
+                        max_width_px=max_width,
                     )
                 else:
                     stroke_data = await asyncio.get_event_loop().run_in_executor(

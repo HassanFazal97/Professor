@@ -21,12 +21,17 @@ class LaTeXToStrokes:
     def __init__(self):
         self.mathjax_url = os.getenv("LATEX_RENDER_URL", "http://localhost:3001/mathjax")
         self._fallback_writer = HandwritingSynthesizer()
+        # Base/limits for adaptive LaTeX sizing to match nearby handwriting.
+        self._target_height_px = float(os.getenv("LATEX_TARGET_HEIGHT_PX", "34"))
+        self._target_height_min_px = float(os.getenv("LATEX_TARGET_HEIGHT_MIN_PX", "28"))
+        self._target_height_max_px = float(os.getenv("LATEX_TARGET_HEIGHT_MAX_PX", "44"))
 
     async def convert(
         self,
         latex: str,
         color: str = "#000000",
         position: dict | None = None,
+        max_width_px: float | None = None,
     ) -> StrokeData:
         """
         Convert a LaTeX string to stroke data.
@@ -44,7 +49,13 @@ class LaTeXToStrokes:
         if not svg:
             return self._fallback(latex, color, position)
 
-        strokes = self._svg_to_strokes(svg, color, position)
+        strokes = self._svg_to_strokes(
+            svg,
+            color,
+            position,
+            latex=latex,
+            max_width_px=max_width_px,
+        )
         if not strokes:
             return self._fallback(latex, color, position)
 
@@ -73,7 +84,14 @@ class LaTeXToStrokes:
             print(f"[LaTeX] MathJax render failed: {exc}")
             return ""
 
-    def _svg_to_strokes(self, svg_text: str, color: str, position: dict) -> list[Stroke]:
+    def _svg_to_strokes(
+        self,
+        svg_text: str,
+        color: str,
+        position: dict,
+        latex: str = "",
+        max_width_px: float | None = None,
+    ) -> list[Stroke]:
         try:
             root = ET.fromstring(svg_text)
         except Exception as exc:
@@ -101,6 +119,8 @@ class LaTeXToStrokes:
         sampled: list[list[tuple[float, float]]] = []
         min_x = float("inf")
         min_y = float("inf")
+        max_x = float("-inf")
+        max_y = float("-inf")
 
         for d, affine in path_entries:
             pts = self._sample_svg_path(d)
@@ -111,10 +131,31 @@ class LaTeXToStrokes:
             for x, y in transformed:
                 min_x = min(min_x, x)
                 min_y = min(min_y, y)
+                max_x = max(max_x, x)
+                max_y = max(max_y, y)
             sampled.append(transformed)
 
-        if not sampled or not math.isfinite(min_x) or not math.isfinite(min_y):
+        if (
+            not sampled
+            or not math.isfinite(min_x)
+            or not math.isfinite(min_y)
+            or not math.isfinite(max_x)
+            or not math.isfinite(max_y)
+        ):
             return []
+
+        src_w = max(1.0, max_x - min_x)
+        src_h = max(1.0, max_y - min_y)
+
+        # Primary normalization: adaptive equation height based on expression complexity.
+        target_height = self._estimate_target_height(latex)
+        scale = target_height / src_h
+
+        # Secondary clamp: keep long equations within available board width.
+        if max_width_px is not None and max_width_px > 40:
+            scaled_w = src_w * scale
+            if scaled_w > max_width_px:
+                scale *= max_width_px / scaled_w
 
         off_x = float(position.get("x", 100))
         off_y = float(position.get("y", 100))
@@ -123,8 +164,8 @@ class LaTeXToStrokes:
         for contour in sampled:
             points = [
                 StrokePoint(
-                    x=off_x + (x - min_x),
-                    y=off_y + (y - min_y),
+                    x=off_x + (x - min_x) * scale,
+                    y=off_y + (y - min_y) * scale,
                     pressure=0.75,
                 )
                 for x, y in contour
@@ -133,6 +174,47 @@ class LaTeXToStrokes:
                 strokes.append(Stroke(points=points, color=color, width=2.0))
 
         return strokes
+
+    def _estimate_target_height(self, latex: str) -> float:
+        """
+        Heuristic sizing:
+        - Keep simple inline expressions compact
+        - Expand complex structures (fractions, roots, integrals, sums, matrices)
+          so they remain legible without user zoom.
+        """
+        text = latex or ""
+        complexity = 0
+
+        # Structural commands with higher visual density.
+        weighted_tokens = [
+            (r"\\frac", 2.0),
+            (r"\\dfrac", 2.0),
+            (r"\\tfrac", 1.5),
+            (r"\\sqrt", 1.4),
+            (r"\\int", 1.8),
+            (r"\\sum", 1.8),
+            (r"\\prod", 1.8),
+            (r"\\lim", 1.2),
+            (r"\\begin\{matrix\}", 2.4),
+            (r"\\begin\{pmatrix\}", 2.4),
+            (r"\\begin\{bmatrix\}", 2.4),
+            (r"\\left", 1.0),
+            (r"\\right", 1.0),
+        ]
+        for pattern, weight in weighted_tokens:
+            complexity += len(re.findall(pattern, text)) * weight
+
+        # Penalize deep superscript/subscript usage.
+        complexity += text.count("^") * 0.45
+        complexity += text.count("_") * 0.45
+
+        # Very long expressions get a small readability bump.
+        complexity += min(2.0, max(0.0, (len(text) - 24) / 40.0))
+
+        # Map complexity -> target height.
+        # Typical range ends up ~28px (simple) to ~44px (complex).
+        height = self._target_height_px + complexity * 2.2 - 4.0
+        return min(self._target_height_max_px, max(self._target_height_min_px, height))
 
     def _sample_svg_path(self, path_d: str) -> list[tuple[float, float]]:
         """Sample evenly-spaced points along an SVG path string."""
