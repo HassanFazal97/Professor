@@ -22,9 +22,9 @@ class LaTeXToStrokes:
         self.mathjax_url = os.getenv("LATEX_RENDER_URL", "http://localhost:3001/mathjax")
         self._fallback_writer = HandwritingSynthesizer()
         # Base/limits for adaptive LaTeX sizing to match nearby handwriting.
-        self._target_height_px = float(os.getenv("LATEX_TARGET_HEIGHT_PX", "34"))
-        self._target_height_min_px = float(os.getenv("LATEX_TARGET_HEIGHT_MIN_PX", "28"))
-        self._target_height_max_px = float(os.getenv("LATEX_TARGET_HEIGHT_MAX_PX", "44"))
+        self._target_height_px = float(os.getenv("LATEX_TARGET_HEIGHT_PX", "70"))
+        self._target_height_min_px = float(os.getenv("LATEX_TARGET_HEIGHT_MIN_PX", "54"))
+        self._target_height_max_px = float(os.getenv("LATEX_TARGET_HEIGHT_MAX_PX", "110"))
 
     async def convert(
         self,

@@ -8,17 +8,17 @@ from pathlib import Path
 from fontTools.pens.recordingPen import RecordingPen
 from fontTools.ttLib import TTFont
 
-# Caveat is a Google Font (OFL license) designed to look like casual handwriting.
-# We download the static regular weight TTF on first use and cache it next to this file.
+# Patrick Hand is a Google Font (OFL license) designed to look like clean,
+# printed handwriting — less curvy/cursive than Caveat.
+# We download the static TTF on first use and cache it next to this file.
 _FONT_URL = (
     "https://cdn.jsdelivr.net/gh/google/fonts@main"
-    "/ofl/caveat/Caveat%5Bwght%5D.ttf"
+    "/ofl/patrickhand/PatrickHand-Regular.ttf"
 )
-_FONT_PATH = Path(__file__).parent / "Caveat-Regular.ttf"
+_FONT_PATH = Path(__file__).parent / "PatrickHand-Regular.ttf"
 
 # How tall capital letters should appear on the whiteboard canvas (px).
-# 26px gives a fine pen-line feel; 38px was too chunky/chalk-like.
-_TARGET_CAP_HEIGHT_PX = 26
+_TARGET_CAP_HEIGHT_PX = 40
 
 
 # ── Wire-format dataclasses (must match frontend StrokeData type) ─────────────
@@ -158,7 +158,8 @@ def _recording_to_contours(value: list) -> list[list[tuple]]:
 class HandwritingSynthesizer:
     """
     Converts plain text to handwriting stroke coordinates using the
-    Caveat handwriting font (Google Fonts, OFL license).
+    Patrick Hand font (Google Fonts, OFL license) — a clean, printed
+    handwriting style.
 
     The font is downloaded once to the package directory and cached.
     If the font or fonttools is unavailable, the stub path is used as fallback.
@@ -178,7 +179,7 @@ class HandwritingSynthesizer:
             return
 
         if not _FONT_PATH.exists():
-            print("Downloading Caveat-Regular.ttf from Google Fonts…", flush=True)
+            print("Downloading PatrickHand-Regular.ttf from Google Fonts…", flush=True)
             try:
                 # macOS Python often lacks system CA certs; try certifi first,
                 # then fall back to an unverified context (font download only).
@@ -238,28 +239,34 @@ class HandwritingSynthesizer:
         scale = self._scale
         strokes: list[Stroke] = []
         x_cursor = 0.0  # accumulated horizontal advance in scaled pixels
+        superscript_scale = scale * 0.62
+        superscript_rise = _TARGET_CAP_HEIGHT_PX * 0.55
+        drawn_char_count = 0
 
-        for char in text:
-            if char == "\n":
-                continue  # multi-line layout not implemented
+        def draw_char(char: str, char_scale: float, y_offset_px: float = 0.0) -> float:
+            """Draw a single character and return horizontal advance in px."""
+            nonlocal drawn_char_count
+
+            if char == " ":
+                return self._cap_height_units * 0.32 * char_scale
 
             glyph_name = self._cmap.get(ord(char)) if self._cmap else None  # type: ignore[union-attr]
 
             if glyph_name is None or glyph_name not in self._glyph_set:
                 # Use a space-width advance for unknown characters
-                x_cursor += self._cap_height_units * 0.35 * scale
-                continue
+                return self._cap_height_units * 0.35 * char_scale
 
             try:
                 glyph = self._glyph_set[glyph_name]
                 pen = RecordingPen()
                 glyph.draw(pen)
                 contours = _recording_to_contours(pen.value)
-                advance = (glyph.width if hasattr(glyph, "width") else self._cap_height_units * 0.5)
+                advance_units = (
+                    glyph.width if hasattr(glyph, "width") else self._cap_height_units * 0.5
+                )
             except Exception as exc:
                 print(f"Glyph render failed for {char!r}: {exc}", flush=True)
-                x_cursor += self._cap_height_units * 0.35 * scale
-                continue
+                return self._cap_height_units * 0.35 * char_scale
 
             for contour in contours:
                 if len(contour) < 2:
@@ -273,20 +280,21 @@ class HandwritingSynthesizer:
                         fx, fy = pt
                     except (TypeError, ValueError):
                         continue
+
                     # Transform to canvas coordinates:
-                    # • X: position["x"] + current character offset + glyph x * scale
+                    # • X: position["x"] + current character offset + glyph x * char_scale
                     # • Y: font Y-axis is up; canvas Y-axis is down.
-                    #       Baseline sits at position["y"]; ascenders go above (smaller y).
-                    px = position["x"] + x_cursor + fx * scale
-                    py = position["y"] - fy * scale
+                    px = position["x"] + x_cursor + fx * char_scale
+                    py = position["y"] - fy * char_scale - y_offset_px
 
                     # Sine pressure curve: soft at start and end, full in the middle
                     t = idx / max(n - 1, 1)
                     pressure = 0.4 + 0.6 * math.sin(math.pi * t)
 
-                    # Organic ±0.8 px jitter
-                    px += random.uniform(-0.8, 0.8)
-                    py += random.uniform(-0.8, 0.8)
+                    # Keep jitter proportional when drawing smaller superscripts.
+                    jitter = 0.8 * (char_scale / max(scale, 1e-6))
+                    px += random.uniform(-jitter, jitter)
+                    py += random.uniform(-jitter, jitter)
 
                     points.append(
                         StrokePoint(
@@ -296,14 +304,76 @@ class HandwritingSynthesizer:
                         )
                     )
 
-                strokes.append(Stroke(points=points, color=color, width=1.5))
+                stroke_width = 1.5 * (char_scale / max(scale, 1e-6)) ** 0.85
+                strokes.append(Stroke(points=points, color=color, width=round(stroke_width, 2)))
 
-            x_cursor += advance * scale
+            drawn_char_count += 1
+            return advance_units * char_scale
+
+        def read_superscript_token(src: str, start_idx: int) -> tuple[str, int]:
+            """
+            Read exponent token after '^':
+            - x^{n-1} -> "n-1"
+            - x^(n-1) -> "n-1"
+            - x^n -> "n"
+            Returns (token_text, consumed_chars_from_start_idx).
+            """
+            if start_idx >= len(src):
+                return "", 0
+
+            opener = src[start_idx]
+            if opener in "{(":
+                closer = "}" if opener == "{" else ")"
+                depth = 1
+                j = start_idx + 1
+                buf: list[str] = []
+                while j < len(src):
+                    ch = src[j]
+                    if ch == opener:
+                        depth += 1
+                    elif ch == closer:
+                        depth -= 1
+                        if depth == 0:
+                            return "".join(buf), (j - start_idx + 1)
+                    if depth >= 1:
+                        buf.append(ch)
+                    j += 1
+                # Unmatched group: consume until end, best-effort rendering.
+                return "".join(buf), (len(src) - start_idx)
+
+            return src[start_idx], 1
+
+        i = 0
+        while i < len(text):
+            char = text[i]
+            if char == "\n":
+                i += 1
+                continue  # multi-line layout not implemented
+
+            # Render caret notation as true superscript in stroke coordinates.
+            if char == "^":
+                token, consumed = read_superscript_token(text, i + 1)
+                if consumed > 0 and token:
+                    for sup_char in token:
+                        if sup_char in "\n{}()":
+                            continue
+                        x_cursor += draw_char(
+                            sup_char,
+                            char_scale=superscript_scale,
+                            y_offset_px=superscript_rise,
+                        )
+                    i += consumed + 1
+                    continue
+                i += 1
+                continue
+
+            x_cursor += draw_char(char, char_scale=scale)
+            i += 1
 
         # Set animation speed so writing takes ~0.12s per character (min 1s total).
         # The frontend draws `Math.round(speed * 2)` points per frame at ~60fps.
         total_pts = sum(len(s.points) for s in strokes)
-        target_sec = max(1.0, 0.12 * len(text))
+        target_sec = max(1.0, 0.12 * max(drawn_char_count, 1))
         anim_speed = max(1.0, round(total_pts / (target_sec * 60 * 2), 2))
 
         return StrokeData(strokes=strokes, position=position, animation_speed=anim_speed)
