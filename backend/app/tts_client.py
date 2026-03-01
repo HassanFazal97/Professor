@@ -44,7 +44,8 @@ class TTSClient:
         if not self.enabled or not text.strip():
             return
 
-        url = f"{ELEVENLABS_API_URL}/{self.voice_id}/stream"
+        # pcm_22050 = 22050 Hz, 16-bit signed LE, mono — no MP3 encoder silence
+        url = f"{ELEVENLABS_API_URL}/{self.voice_id}/stream?output_format=pcm_22050"
         headers = {
             "xi-api-key": self.api_key,
             "Content-Type": "application/json",
@@ -52,10 +53,11 @@ class TTSClient:
         }
         payload = {
             "text": text,
-            "model_id": "eleven_flash_v2_5",
+            "model_id": "eleven_v3",
             "voice_settings": {
-                "stability": 0.5,
+                "stability": 0.35,
                 "similarity_boost": 0.75,
+                "style": 0.3,
                 "use_speaker_boost": True,
             },
         }
@@ -63,6 +65,6 @@ class TTSClient:
         async with aiohttp.ClientSession(connector=connector) as session:
             async with session.post(url, headers=headers, json=payload) as resp:
                 resp.raise_for_status()
-                async for chunk in resp.content.iter_chunked(4096):
+                async for chunk in resp.content.iter_chunked(8192):
                     if chunk:
                         yield chunk

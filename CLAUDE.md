@@ -79,16 +79,24 @@ Frontend WebSocket ──► Orchestrator (orchestrator.py)
 |--------|--------|-------------|
 | `session_start` | `subject` | Begins session, triggers greeting |
 | `transcript` | `text` | Final STT transcript |
-| `board_snapshot` | `image_base64` | PNG of composite whiteboard |
+| `board_snapshot` | `image_base64`, `width?`, `height?`, `student_max_y?` | PNG of composite whiteboard |
+| `audio_start` | — | Begin audio stream to backend |
+| `audio_data` | `data` (base64) | Raw PCM audio chunk |
+| `audio_stop` | — | End audio stream |
 | `barge_in` | — | Student started speaking; interrupt Ada |
 
 **Server → Client:**
 | `type` | Fields | Description |
 |--------|--------|-------------|
+| `connected` | `session_id`, `message` | Sent on WebSocket connect |
 | `speech_text` | `text` | Ada's speech text (fires before audio) |
 | `audio_chunk` | `data` (base64 PCM) | Streaming TTS audio |
 | `audio_done` | — | TTS stream finished |
-| `strokes` | `StrokeData` | Animated handwriting strokes |
+| `strokes` | `strokes: StrokeData` | Animated handwriting strokes |
+| `board_action` | `action: BoardAction` | Single board action |
+| `transcript_interim` | `text` | Interim STT result (for display) |
+| `state_update` | `tutor_state`, `wait_for_student` | Ada state change |
+| `scroll_board` | `scroll_by` | Request frontend scroll |
 | `error` | `message` | Server-side error |
 
 ---
@@ -100,13 +108,16 @@ Frontend WebSocket ──► Orchestrator (orchestrator.py)
 {
   "speech": "...",
   "board_actions": [
-    { "type": "write", "content": "x^2 + 1", "position": {"x": 80, "y": 140}, "color": "#0000FF" },
+    { "type": "write", "content": "x^2 + 1", "format": "latex", "position": {"x": 80, "y": 140}, "color": "#0000FF" },
+    { "type": "underline", "target_area": {"x": 80, "y": 140, "width": 100, "height": 20}, "color": "#FF0000" },
     { "type": "clear" }
   ],
   "tutor_state": "listening",
   "wait_for_student": false
 }
 ```
+
+`format` on a `write` action is `"text"` (default) or `"latex"`. `underline` draws a highlight over an existing region.
 
 ### Stroke Data (sent as `{ type: "strokes", ... }` over WebSocket)
 ```json
@@ -167,14 +178,22 @@ When a student draws silently (no speech for 4s, no analysis for 15s), `_handle_
 | `ANTHROPIC_API_KEY` | Claude API (LLM + vision) |
 | `DEEPGRAM_API_KEY` | Speech-to-text |
 | `ELEVENLABS_API_KEY` | Text-to-speech |
-| `ELEVENLABS_VOICE_ID` | *(optional)* Override TTS voice (default: Adam) |
+| `ELEVENLABS_VOICE_ID` | *(optional)* Override TTS voice (default: `qyFhaJEAwHR0eYLCmlUT`) |
 | `LLM_MODEL` | *(optional)* Override LLM model (default: `claude-haiku-4-5-20251001`, use `claude-sonnet-4-5` for demo quality) |
-| `LATEX_RENDER_URL` | *(optional)* Local LaTeX SVG renderer URL (default: `http://localhost:3001/mathjax`) |
-| `LATEX_TARGET_HEIGHT_PX` | *(optional)* Visual height target for LaTeX strokes (default: `34`) |
-| `LATEX_TARGET_HEIGHT_MIN_PX` | *(optional)* Minimum adaptive LaTeX height (default: `28`) |
-| `LATEX_TARGET_HEIGHT_MAX_PX` | *(optional)* Maximum adaptive LaTeX height (default: `44`) |
-| `ECHO_COOLDOWN_SEC` | *(optional)* Echo suppression window for STT transcripts |
-| `AUTO_BARGE_DEBOUNCE_SEC` | *(optional)* Min interval between auto barge-ins |
-| `BARGE_START_GUARD_SEC` | *(optional)* Ignore SpeechStarted right after TTS begins |
-| `AUTO_BARGE_CONFIRM_WINDOW_SEC` | *(optional)* Max delay to confirm SpeechStarted with a transcript |
-| `STT_MERGE_WINDOW_SEC` | *(optional)* Merge adjacent final STT chunks into one utterance (default: `0.8`) |
+| `FRONTEND_URL` | *(optional)* CORS allowed origin (default: `http://localhost:3000`) |
+| `BACKEND_PORT` | *(optional)* Backend listen port (default: `8000`) |
+| `LATEX_RENDER_URL` | *(optional)* LaTeX SVG renderer URL (default: `http://localhost:3001/mathjax`) |
+| `LATEX_TARGET_HEIGHT_PX` | *(optional)* Visual height target for LaTeX strokes (default: `70`) |
+| `LATEX_TARGET_HEIGHT_MIN_PX` | *(optional)* Minimum adaptive LaTeX height (default: `54`) |
+| `LATEX_TARGET_HEIGHT_MAX_PX` | *(optional)* Maximum adaptive LaTeX height (default: `110`) |
+| `BOARD_WRITE_X` | *(optional)* X-origin for Ada's board writes (default: `20`) |
+| `ECHO_COOLDOWN_SEC` | *(optional)* Echo suppression window for STT transcripts (default: `1.2`) |
+| `AUTO_BARGE_DEBOUNCE_SEC` | *(optional)* Min interval between auto barge-ins (default: `0.5`) |
+| `BARGE_START_GUARD_SEC` | *(optional)* Ignore SpeechStarted right after TTS begins (default: `0.25`) |
+| `AUTO_BARGE_CONFIRM_WINDOW_SEC` | *(optional)* Max delay to confirm SpeechStarted with a transcript (default: `1.5`) |
+| `STT_MERGE_WINDOW_SEC` | *(optional)* Merge adjacent final STT chunks into one utterance (default: `1.1`) |
+| `STT_FINAL_AFTER_CLOSE_WAIT_SEC` | *(optional)* Wait for final transcript after STT close (default: `2.5`) |
+| `DEEPGRAM_ENDPOINTING_MS` | *(optional)* STT end-of-utterance timeout (default: `700`) |
+| `DEEPGRAM_MODEL` | *(optional)* Deepgram model (default: `nova-2`) |
+| `STT_MIN_CONFIDENCE` | *(optional)* Minimum transcript confidence filter (default: `0.50`) |
+| `STT_SINGLE_WORD_MIN_CONFIDENCE` | *(optional)* Single-word confidence filter (default: `0.70`) |
