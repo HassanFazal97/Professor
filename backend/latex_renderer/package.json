@@ -1,0 +1,14 @@
+{
+  "name": "latex-renderer",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node server.mjs",
+    "dev": "node server.mjs"
+  },
+  "dependencies": {
+    "express": "^4.21.2",
+    "mathjax-full": "^3.2.2"
+  }
+}
