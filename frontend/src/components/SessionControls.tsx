@@ -1,22 +1,11 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef } from "react";
 import { useTutorSession } from "@/hooks/useTutorSession";
 import { useVoicePipeline } from "@/hooks/useVoicePipeline";
 import { audioPlayer } from "@/lib/audioPlayer";
 
-const SUBJECTS = [
-  "Mathematics",
-  "Physics",
-  "Chemistry",
-  "Biology",
-  "Computer Science",
-  "History",
-  "English",
-];
-
 export default function SessionControls() {
-  const [selectedSubject, setSelectedSubject] = useState(SUBJECTS[0]);
   const spaceHeldRef = useRef(false);
   const { isConnected, sessionId, startSession, endSession, adaSpeaking, setAdaSpeaking } =
     useTutorSession();
@@ -33,7 +22,7 @@ export default function SessionControls() {
   }, [setAdaSpeaking]);
 
   const handleStart = () => {
-    startSession(selectedSubject);
+    startSession();
   };
 
   const handleEnd = () => {
@@ -104,17 +93,6 @@ export default function SessionControls() {
     <div className="space-y-3">
       {!isConnected ? (
         <>
-          <select
-            value={selectedSubject}
-            onChange={(e) => setSelectedSubject(e.target.value)}
-            className="w-full rounded-md border border-gray-300 bg-white px-3 py-2 text-sm shadow-sm focus:border-blue-500 focus:outline-none"
-          >
-            {SUBJECTS.map((s) => (
-              <option key={s} value={s}>
-                {s}
-              </option>
-            ))}
-          </select>
           <button
             onClick={handleStart}
             className="w-full rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 active:scale-95 transition-transform"
@@ -125,7 +103,7 @@ export default function SessionControls() {
       ) : (
         <div className="space-y-2">
           <div className="flex items-center justify-between text-xs text-gray-500">
-            <span>{selectedSubject}</span>
+            <span>Conversation</span>
             <span className="font-mono">{sessionId?.slice(0, 8)}…</span>
           </div>
 
@@ -137,7 +115,7 @@ export default function SessionControls() {
             onPointerLeave={endPushToTalk}
             title={
               adaSpeaking
-                ? "Interrupt Ada and speak"
+                ? "Interrupt KIA and speak"
                 : "Hold to talk"
             }
             className={`flex w-full items-center justify-center gap-2 rounded-lg px-4 py-2 text-sm font-medium transition-all ${

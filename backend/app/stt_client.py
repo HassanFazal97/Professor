@@ -14,15 +14,16 @@ DEEPGRAM_WS_URL = "wss://api.deepgram.com/v1/listen"
 
 # Minimum confidence for a transcript to be processed.
 # Genuine speech from Nova-2 is usually > 0.8; background noise is much lower.
-MIN_CONFIDENCE = 0.60
+MIN_CONFIDENCE = float(os.getenv("STT_MIN_CONFIDENCE", "0.50"))
 
 # Minimum number of words.
 # Keep this at 1 so natural interjections ("yes", "wait", "no") are not dropped.
-MIN_WORDS = 1
+MIN_WORDS = int(os.getenv("STT_MIN_WORDS", "1"))
 
 # For single-word transcripts, require higher confidence to reduce false
 # barge-ins from background noise and speaker bleed.
-MIN_SINGLE_WORD_CONFIDENCE = 0.82
+MIN_SINGLE_WORD_CONFIDENCE = float(os.getenv("STT_SINGLE_WORD_MIN_CONFIDENCE", "0.70"))
+FINAL_AFTER_CLOSE_WAIT_SEC = float(os.getenv("STT_FINAL_AFTER_CLOSE_WAIT_SEC", "2.5"))
 
 
 class STTClient:
@@ -38,19 +39,21 @@ class STTClient:
     def __init__(self):
         self.api_key = os.getenv("DEEPGRAM_API_KEY", "").strip()
         self.enabled = bool(self.api_key)
+        self.model = os.getenv("DEEPGRAM_MODEL", "nova-2").strip() or "nova-2"
+        self.endpointing_ms = int(os.getenv("DEEPGRAM_ENDPOINTING_MS", "300"))
 
     def build_url(self) -> str:
         return (
             f"{DEEPGRAM_WS_URL}"
-            "?model=nova-2"
+            f"?model={self.model}"
             "&language=en-US"
             "&punctuate=true"
             "&smart_format=true"
             # VAD events — fires SpeechStarted the instant voice is detected,
             # before the transcript is ready. Used for barge-in.
             "&vad_events=true"
-            # Longer endpointing reduces false triggers from brief noises.
-            "&endpointing=500"
+            # Lower endpointing improves responsiveness in push-to-talk mode.
+            f"&endpointing={self.endpointing_ms}"
             # Keep interim results so SpeechStarted events arrive in time.
             "&interim_results=true"
             "&encoding=opus"
@@ -94,7 +97,7 @@ class STTClient:
                     send_exc = send_task.exception() if send_finished else None
                     if send_finished and send_exc is None and recv_task in pending:
                         try:
-                            await asyncio.wait_for(recv_task, timeout=1.5)
+                            await asyncio.wait_for(recv_task, timeout=FINAL_AFTER_CLOSE_WAIT_SEC)
                         except asyncio.TimeoutError:
                             recv_task.cancel()
                             try:

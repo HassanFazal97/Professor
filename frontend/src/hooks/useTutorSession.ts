@@ -19,7 +19,7 @@ interface TutorSessionState {
   ws: TutorWebSocket | null;
 
   // Actions
-  startSession: (subject: string) => void;
+  startSession: () => void;
   endSession: () => void;
   send: (msg: ClientMessage) => void;
   sendTranscript: (text: string) => void;
@@ -62,7 +62,7 @@ export const useTutorSession = create<TutorSessionState>((set, get) => {
   waitForStudent: false,
   ws: null,
 
-  startSession: (subject: string) => {
+  startSession: () => {
     // Unlock AudioContext while we're still inside the click handler
     audioPlayer.resume();
 
@@ -78,7 +78,7 @@ export const useTutorSession = create<TutorSessionState>((set, get) => {
     // Send session_start once connected
     ws.onOpen(() => {
       set({ isConnected: true });
-      get().send({ type: "session_start", subject });
+      get().send({ type: "session_start", subject: "" });
     });
 
     ws.onClose(() => {
@@ -178,6 +178,10 @@ export const useTutorSession = create<TutorSessionState>((set, get) => {
 
       case "state_update":
         set({ tutorMode: msg.tutor_state, waitForStudent: msg.wait_for_student });
+        break;
+
+      case "scroll_board":
+        useWhiteboard.getState().scrollBoard(msg.scroll_by);
         break;
 
       case "error":

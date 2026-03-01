@@ -19,6 +19,7 @@ export function useVoicePipeline() {
   const [isListening, setIsListening] = useState(false);
   const recorderRef = useRef<MediaRecorder | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
+  const stopRequestedRef = useRef(false);
   const { send, isConnected } = useTutorSession();
 
   const startListening = useCallback(async () => {
@@ -53,6 +54,17 @@ export function useVoicePipeline() {
         send({ type: "audio_data", data: btoa(binary) });
       };
 
+      recorder.onstop = () => {
+        // Send audio_stop only after MediaRecorder has emitted its final chunk.
+        if (stopRequestedRef.current) {
+          send({ type: "audio_stop" });
+        }
+        streamRef.current?.getTracks().forEach((t) => t.stop());
+        recorderRef.current = null;
+        streamRef.current = null;
+        stopRequestedRef.current = false;
+      };
+
       // Tell the backend to open a Deepgram connection
       send({ type: "audio_start" });
 
@@ -66,15 +78,12 @@ export function useVoicePipeline() {
 
   const stopListening = useCallback(() => {
     if (!isListening) return;
-
+    stopRequestedRef.current = true;
+    // Flush buffered audio before stop to avoid clipping the utterance tail.
+    recorderRef.current?.requestData();
     recorderRef.current?.stop();
-    streamRef.current?.getTracks().forEach((t) => t.stop());
-    recorderRef.current = null;
-    streamRef.current = null;
-
-    send({ type: "audio_stop" });
     setIsListening(false);
-  }, [isListening, send]);
+  }, [isListening]);
 
   return { isListening, startListening, stopListening };
 }
