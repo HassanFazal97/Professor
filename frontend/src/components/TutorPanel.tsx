@@ -46,7 +46,7 @@ export default function TutorPanel() {
           A
         </div>
         <div>
-          <h1 className="text-sm font-semibold text-gray-900">Professor Ada</h1>
+          <h1 className="text-sm font-semibold text-gray-900">Professor KIA</h1>
           <p className="text-xs text-gray-500">{statusLabel}</p>
         </div>
         <div className="ml-auto">
@@ -68,7 +68,7 @@ export default function TutorPanel() {
                 }}
               />
             ))}
-            <span className="ml-2 text-xs text-blue-500">Ada is speaking</span>
+            <span className="ml-2 text-xs text-blue-500">KIA is speaking</span>
           </div>
         ) : waitForStudent ? (
           <span className="text-xs font-medium text-green-600 animate-pulse">
@@ -85,7 +85,7 @@ export default function TutorPanel() {
       <div className="flex-1 space-y-3 overflow-y-auto text-sm">
         {conversationHistory.length === 0 ? (
           <p className="text-center text-xs text-gray-400">
-            Say hello to Professor Ada to get started.
+            Say hello to Professor KIA to get started.
           </p>
         ) : (
           conversationHistory.filter(turn => turn.content !== "[checking my work on the board]").map((turn, i) => (
@@ -98,7 +98,7 @@ export default function TutorPanel() {
               }`}
             >
               <span className="mb-0.5 block text-[10px] font-semibold uppercase tracking-wide opacity-60">
-                {turn.role === "assistant" ? "Ada" : "You"}
+                {turn.role === "assistant" ? "KIA" : "You"}
               </span>
               {turn.content}
             </div>
