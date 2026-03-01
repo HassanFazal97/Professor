@@ -75,7 +75,11 @@ const SNAPSHOT_MIN_INTERVAL_MS = 2500; // don't send more than once every 2.5s
 export default function Whiteboard() {
   const editorRef = useRef<Editor | null>(null);
   const lastSnapshotRef = useRef<number>(0);
-  const { onSnapshotReady, pendingBoardActions, clearBoardActions } = useWhiteboard();
+  const { onSnapshotReady, pendingBoardActions, clearBoardActions, setEditor } = useWhiteboard();
+
+  useEffect(() => {
+    return () => setEditor(null);
+  }, [setEditor]);
 
   // Process board actions from Ada whenever the queue changes
   useEffect(() => {
@@ -89,11 +93,7 @@ export default function Whiteboard() {
 
   const handleMount = useCallback((editor: Editor) => {
     editorRef.current = editor;
-
-    // Lock the camera at origin (page 0,0 = overlay canvas 0,0) so that
-    // Ada's handwriting coordinates and tldraw page coordinates share the
-    // same space, enabling accurate composite snapshots.
-    editor.setCamera({ x: 0, y: 0, z: 1 });
+    setEditor(editor);
 
     // Trigger snapshot on short drawing pause for better responsiveness
     let idleTimer: ReturnType<typeof setTimeout> | null = null;
@@ -103,7 +103,7 @@ export default function Whiteboard() {
         await captureSnapshot(editor);
       }, 1400);
     });
-  }, []);
+  }, [setEditor]);
 
   const captureSnapshot = async (editor: Editor) => {
     const now = Date.now();
@@ -128,9 +128,7 @@ export default function Whiteboard() {
       ctx.fillStyle = "#ffffff";
       ctx.fillRect(0, 0, W, H);
 
-      // Draw tldraw shapes. Export using the current viewport bounds so the
-      // output pixels align with overlay canvas coordinates (both are 0,0-anchored
-      // at the container top-left when the camera is at identity).
+      // Draw tldraw shapes using the current viewport bounds.
       if (ids.length > 0) {
         const viewBounds = editor.getViewportPageBounds();
         const blob = await exportToBlob({

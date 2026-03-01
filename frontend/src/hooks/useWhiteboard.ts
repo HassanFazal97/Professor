@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import type { Editor } from "@tldraw/tldraw";
 import type { BoardAction, StrokeData } from "@/types";
 import { useTutorSession } from "./useTutorSession";
 
@@ -6,6 +7,8 @@ interface WhiteboardState {
   pendingStrokes: StrokeData | null;
   strokeQueue: StrokeData[];
   pendingBoardActions: BoardAction[];
+  editor: Editor | null;
+  overlayResetVersion: number;
 
   // The overlay canvas element — registered by WhiteboardOverlay on mount,
   // read by Whiteboard.tsx when compositing snapshots.
@@ -28,6 +31,7 @@ interface WhiteboardState {
 
   // Called by WhiteboardOverlay to register/unregister its canvas
   setOverlayCanvas: (canvas: HTMLCanvasElement | null) => void;
+  setEditor: (editor: Editor | null) => void;
 
   // Called on barge-in to stop the current animation and clear the queue
   cancelStrokes: () => void;
@@ -40,6 +44,8 @@ export const useWhiteboard = create<WhiteboardState>((set, get) => ({
   pendingStrokes: null,
   strokeQueue: [],
   pendingBoardActions: [],
+  editor: null,
+  overlayResetVersion: 0,
   overlayCanvas: null,
 
   onSnapshotReady: (imageBase64: string, width: number, height: number) => {
@@ -69,6 +75,7 @@ export const useWhiteboard = create<WhiteboardState>((set, get) => ({
   clearBoardActions: () => set({ pendingBoardActions: [] }),
 
   setOverlayCanvas: (canvas) => set({ overlayCanvas: canvas }),
+  setEditor: (editor) => set({ editor }),
 
   // Clear pending strokes and the queue — WhiteboardOverlay's cancelRef handles the RAF loop
   cancelStrokes: () => set({ pendingStrokes: null, strokeQueue: [] }),
@@ -80,5 +87,6 @@ export const useWhiteboard = create<WhiteboardState>((set, get) => ({
       const ctx = canvas.getContext("2d");
       ctx?.clearRect(0, 0, canvas.width, canvas.height);
     }
+    set((state) => ({ overlayResetVersion: state.overlayResetVersion + 1 }));
   },
 }));

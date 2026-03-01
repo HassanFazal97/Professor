@@ -2,7 +2,10 @@
 
 import { useEffect, useRef } from "react";
 import { useWhiteboard } from "@/hooks/useWhiteboard";
-import { animateStrokes } from "@/lib/strokeAnimator";
+import type { Stroke, StrokeData } from "@/types";
+
+const JITTER_PX = 1;
+const DEFAULT_SPEED = 1.0;
 
 /**
  * Transparent canvas overlay on top of the tldraw canvas.
@@ -11,8 +14,17 @@ import { animateStrokes } from "@/lib/strokeAnimator";
  */
 export default function WhiteboardOverlay() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const cancelRef = useRef<(() => void) | null>(null);
-  const { pendingStrokes, clearPendingStrokes, setOverlayCanvas } = useWhiteboard();
+  const cancelAnimationRef = useRef<(() => void) | null>(null);
+  const completedRef = useRef<StrokeData[]>([]);
+  const activePartialRef = useRef<StrokeData | null>(null);
+  const jitterRef = useRef<Map<string, { x: number; y: number }>>(new Map());
+  const {
+    pendingStrokes,
+    clearPendingStrokes,
+    setOverlayCanvas,
+    editor,
+    overlayResetVersion,
+  } = useWhiteboard();
 
   // Register this canvas with the store so Whiteboard.tsx can include it
   // in composite snapshots sent to the LLM for vision.
@@ -39,26 +51,153 @@ export default function WhiteboardOverlay() {
     return () => observer.disconnect();
   }, []);
 
-  useEffect(() => {
-    // Cancel any in-progress animation first.
-    // On barge-in, cancelStrokes() sets pendingStrokes → null, which re-runs
-    // this effect. The cancelled RAF loop stops without calling onDone.
-    if (cancelRef.current) {
-      cancelRef.current();
-      cancelRef.current = null;
-    }
-
+  const renderScene = () => {
     const canvas = canvasRef.current;
-    if (!pendingStrokes || !canvas) return;
-
+    if (!canvas) return;
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
 
-    cancelRef.current = animateStrokes(ctx, pendingStrokes, () => {
-      cancelRef.current = null;
-      clearPendingStrokes(); // dequeue next stroke batch when this one finishes
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+    const drawStrokeBatch = (batch: StrokeData) => {
+      for (const stroke of batch.strokes) {
+        if (!stroke.points.length) continue;
+        ctx.beginPath();
+        let started = false;
+
+        for (let i = 0; i < stroke.points.length; i++) {
+          const p = stroke.points[i];
+          const screen = editor
+            ? editor.pageToScreen({ x: p.x, y: p.y })
+            : { x: p.x, y: p.y };
+
+          const key = `${stroke.color}:${stroke.width}:${p.x.toFixed(2)}:${p.y.toFixed(2)}:${i}`;
+          let j = jitterRef.current.get(key);
+          if (!j) {
+            j = {
+              x: (Math.random() - 0.5) * 2 * JITTER_PX,
+              y: (Math.random() - 0.5) * 2 * JITTER_PX,
+            };
+            jitterRef.current.set(key, j);
+          }
+
+          const x = screen.x + j.x;
+          const y = screen.y + j.y;
+
+          ctx.lineWidth = stroke.width * (0.8 + p.pressure * 0.4);
+          ctx.strokeStyle = stroke.color;
+          ctx.lineCap = "round";
+          ctx.lineJoin = "round";
+
+          if (!started) {
+            ctx.moveTo(x, y);
+            started = true;
+          } else {
+            ctx.lineTo(x, y);
+          }
+        }
+
+        if (started) ctx.stroke();
+      }
+    };
+
+    for (const batch of completedRef.current) drawStrokeBatch(batch);
+    if (activePartialRef.current) drawStrokeBatch(activePartialRef.current);
+  };
+
+  // Repaint on camera / editor changes so world-space strokes stay aligned.
+  useEffect(() => {
+    if (!editor) {
+      renderScene();
+      return;
+    }
+    editor.on("change", () => {
+      renderScene();
     });
-  }, [pendingStrokes, clearPendingStrokes]);
+    renderScene();
+  }, [editor]);
+
+  // Clear vector/raster caches when the orchestrator issues a board clear.
+  useEffect(() => {
+    completedRef.current = [];
+    activePartialRef.current = null;
+    jitterRef.current.clear();
+    renderScene();
+  }, [overlayResetVersion]);
+
+  useEffect(() => {
+    // Cancel any in-progress animation first.
+    if (cancelAnimationRef.current) {
+      cancelAnimationRef.current();
+      cancelAnimationRef.current = null;
+    }
+
+    if (!pendingStrokes) {
+      activePartialRef.current = null;
+      renderScene();
+      return;
+    }
+
+    const queue: Array<{ stroke: Stroke; pointIdx: number; isFirst: boolean }> = [];
+    pendingStrokes.strokes.forEach((stroke) => {
+      stroke.points.forEach((_, idx) => {
+        queue.push({ stroke, pointIdx: idx, isFirst: idx === 0 });
+      });
+    });
+
+    if (!queue.length) {
+      clearPendingStrokes();
+      return;
+    }
+
+    const speed = pendingStrokes.animation_speed * DEFAULT_SPEED;
+    let index = 0;
+    let cancelled = false;
+    const activePoints = pendingStrokes.strokes.map((s) => ({
+      ...s,
+      points: [] as typeof s.points,
+    }));
+    activePartialRef.current = {
+      ...pendingStrokes,
+      strokes: activePoints,
+    };
+
+    const tick = () => {
+      if (cancelled || !activePartialRef.current) return;
+
+      const pointsThisFrame = Math.max(1, Math.round(speed * 2));
+      for (let i = 0; i < pointsThisFrame && index < queue.length; i++) {
+        const item = queue[index];
+        const strokeIdx = pendingStrokes.strokes.indexOf(item.stroke);
+        if (strokeIdx >= 0) {
+          const sourcePoint = item.stroke.points[item.pointIdx];
+          activePartialRef.current.strokes[strokeIdx].points.push(sourcePoint);
+        }
+        index++;
+      }
+
+      renderScene();
+
+      if (index < queue.length) {
+        requestAnimationFrame(tick);
+      } else {
+        completedRef.current.push(pendingStrokes);
+        activePartialRef.current = null;
+        renderScene();
+        clearPendingStrokes();
+      }
+    };
+
+    requestAnimationFrame(tick);
+
+    cancelAnimationRef.current = () => {
+      cancelled = true;
+    };
+
+    return () => {
+      cancelled = true;
+    };
+  }, [pendingStrokes, clearPendingStrokes, editor]);
 
   return (
     <canvas
