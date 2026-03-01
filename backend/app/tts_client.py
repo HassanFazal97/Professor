@@ -13,7 +13,7 @@ ELEVENLABS_API_URL = "https://api.elevenlabs.io/v1/text-to-speech"
 class TTSClient:
     def __init__(self):
         self.api_key = os.getenv("ELEVENLABS_API_KEY", "").strip()
-        self.voice_id = os.getenv("ELEVENLABS_VOICE_ID", "21m00Tcm4TlvDq8ikWAM")  # Rachel
+        self.voice_id = os.getenv("ELEVENLABS_VOICE_ID", "pNInz6obpgDQGcFmaJgB")  # Adam
         self.enabled = bool(self.api_key)
 
     async def synthesize(self, text: str) -> bytes:

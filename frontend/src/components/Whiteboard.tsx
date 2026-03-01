@@ -30,7 +30,7 @@ function applyBoardAction(editor: Editor, action: BoardAction): void {
             text: action.content,
             color: toTldrawColor(action.color),
             size: "m",
-            font: "draw",
+            font: "sans",
             autoSize: true,
             w: 300,
           } as any,

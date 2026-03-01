@@ -49,7 +49,7 @@ docker compose up --build
 **AI Services:**
 - LLM + Vision: Claude API (`claude-haiku-4-5-20251001`) — structured JSON responses
 - STT: Deepgram Nova-2 (streaming WebSocket proxy)
-- TTS: ElevenLabs `eleven_flash_v2_5` (streaming audio chunks); voice configurable via `ELEVENLABS_VOICE_ID` env var (default: Rachel)
+- TTS: ElevenLabs `eleven_flash_v2_5` (streaming audio chunks); voice configurable via `ELEVENLABS_VOICE_ID` env var (default: Adam)
 - Handwriting: Caveat-Regular.ttf via `fonttools` — glyph Bézier curves → stroke points. Font auto-downloads to `backend/app/handwriting/Caveat-Regular.ttf` on first run.
 
 ---
@@ -167,7 +167,7 @@ When a student draws silently (no speech for 4s, no analysis for 15s), `_handle_
 | `ANTHROPIC_API_KEY` | Claude API (LLM + vision) |
 | `DEEPGRAM_API_KEY` | Speech-to-text |
 | `ELEVENLABS_API_KEY` | Text-to-speech |
-| `ELEVENLABS_VOICE_ID` | *(optional)* Override TTS voice (default: Rachel) |
+| `ELEVENLABS_VOICE_ID` | *(optional)* Override TTS voice (default: Adam) |
 | `LLM_MODEL` | *(optional)* Override LLM model (default: `claude-haiku-4-5-20251001`, use `claude-sonnet-4-5` for demo quality) |
 | `LATEX_RENDER_URL` | *(optional)* Local LaTeX SVG renderer URL (default: `http://localhost:3001/mathjax`) |
 | `LATEX_TARGET_HEIGHT_PX` | *(optional)* Visual height target for LaTeX strokes (default: `34`) |

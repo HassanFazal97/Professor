@@ -7,6 +7,24 @@ import type { Stroke, StrokeData } from "@/types";
 const JITTER_PX = 1;
 const DEFAULT_SPEED = 1.0;
 
+const HEX_TO_TLDRAW_COLOR: Record<string, "black" | "blue" | "red" | "green"> = {
+  "#000000": "black",
+  "#0000FF": "blue",
+  "#FF0000": "red",
+  "#00AA00": "green",
+};
+
+function toTldrawColor(hex: string): "black" | "blue" | "red" | "green" {
+  return HEX_TO_TLDRAW_COLOR[(hex || "").toUpperCase()] ?? "black";
+}
+
+function toTldrawSize(width: number): "s" | "m" | "l" | "xl" {
+  if (width <= 1.7) return "s";
+  if (width <= 2.6) return "m";
+  if (width <= 3.8) return "l";
+  return "xl";
+}
+
 /**
  * Transparent canvas overlay on top of the tldraw canvas.
  * The AI's animated handwriting strokes are drawn here so they
@@ -25,6 +43,49 @@ export default function WhiteboardOverlay() {
     editor,
     overlayResetVersion,
   } = useWhiteboard();
+
+  const commitStrokeBatchToEditor = (batch: StrokeData) => {
+    if (!editor) return;
+    const shapes: any[] = [];
+
+    for (const stroke of batch.strokes) {
+      if (!stroke.points.length) continue;
+      let minX = Number.POSITIVE_INFINITY;
+      let minY = Number.POSITIVE_INFINITY;
+      for (const p of stroke.points) {
+        minX = Math.min(minX, p.x);
+        minY = Math.min(minY, p.y);
+      }
+      if (!Number.isFinite(minX) || !Number.isFinite(minY)) continue;
+
+      const segmentPoints = stroke.points.map((p) => ({
+        x: p.x - minX,
+        y: p.y - minY,
+        z: p.pressure,
+      }));
+
+      shapes.push({
+        type: "draw",
+        x: minX,
+        y: minY,
+        props: {
+          color: toTldrawColor(stroke.color),
+          fill: "none",
+          dash: "draw",
+          size: toTldrawSize(stroke.width),
+          segments: [{ type: "free", points: segmentPoints }],
+          isComplete: true,
+          isClosed: false,
+          isPen: true,
+          scale: 1,
+        },
+      });
+    }
+
+    if (shapes.length > 0) {
+      editor.createShapes(shapes);
+    }
+  };
 
   // Register this canvas with the store so Whiteboard.tsx can include it
   // in composite snapshots sent to the LLM for vision.
@@ -181,7 +242,11 @@ export default function WhiteboardOverlay() {
       if (index < queue.length) {
         requestAnimationFrame(tick);
       } else {
-        completedRef.current.push(pendingStrokes);
+        if (editor) {
+          commitStrokeBatchToEditor(pendingStrokes);
+        } else {
+          completedRef.current.push(pendingStrokes);
+        }
         activePartialRef.current = null;
         renderScene();
         clearPendingStrokes();
