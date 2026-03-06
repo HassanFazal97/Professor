@@ -3,23 +3,38 @@ import base64
 import os
 import time
 import textwrap
+import uuid
 
 from fastapi import WebSocket
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.handwriting.latex_to_strokes import LaTeXToStrokes
 from app.handwriting.synthesizer import HandwritingSynthesizer
 from app.llm_client import LLMClient
+from app.models import TutorSessionRecord
 from app.session import TutorSession
 from app.stt_client import STTClient
 from app.tts_client import TTSClient
+
+_DB_SAVE_INTERVAL_SEC = 30
 
 
 class Orchestrator:
     """Routes incoming WebSocket messages to the appropriate subsystem."""
 
-    def __init__(self, session: TutorSession, websocket: WebSocket):
+    def __init__(
+        self,
+        session: TutorSession,
+        websocket: WebSocket,
+        db: AsyncSession | None = None,
+        user_id: str | None = None,
+    ):
         self.session = session
         self.websocket = websocket
+        self.db = db
+        self.user_id = user_id
+        self._save_task: asyncio.Task | None = None
         self.llm = LLMClient()
         self.tts = TTSClient()
         self.stt = STTClient()
@@ -88,6 +103,8 @@ class Orchestrator:
             self._stt_task.cancel()
         if self._stt_flush_task and not self._stt_flush_task.done():
             self._stt_flush_task.cancel()
+        if self._save_task and not self._save_task.done():
+            self._save_task.cancel()
         # Drain the audio queue with a sentinel so _send_audio exits cleanly
         if self._audio_queue is not None:
             try:
@@ -97,6 +114,10 @@ class Orchestrator:
             self._audio_queue = None
 
     async def on_connect(self) -> None:
+        # Start periodic DB save if we have a DB session
+        if self.db is not None:
+            self._save_task = asyncio.create_task(self._periodic_save())
+
         await self.websocket.send_json(
             {
                 "type": "connected",
@@ -104,6 +125,42 @@ class Orchestrator:
                 "message": "Connected to AI Tutor. Say hello to Professor KIA!",
             }
         )
+
+    async def _periodic_save(self) -> None:
+        """Save session state to DB every 30 seconds."""
+        try:
+            while True:
+                await asyncio.sleep(_DB_SAVE_INTERVAL_SEC)
+                await self._save_session_to_db()
+        except asyncio.CancelledError:
+            pass
+
+    async def _save_session_to_db(self) -> None:
+        """Upsert session scalars + conversation history into tutor_sessions."""
+        if self.db is None or self.user_id is None:
+            return
+        try:
+            page_id = uuid.UUID(self.session.session_id)
+            result = await self.db.execute(
+                select(TutorSessionRecord).where(TutorSessionRecord.page_id == page_id)
+            )
+            record = result.scalar_one_or_none()
+            data = self.session.to_db_dict()
+
+            if record:
+                for k, v in data.items():
+                    setattr(record, k, v)
+            else:
+                record = TutorSessionRecord(
+                    page_id=page_id,
+                    user_id=uuid.UUID(self.user_id),
+                    **data,
+                )
+                self.db.add(record)
+
+            await self.db.commit()
+        except Exception as e:
+            print(f"[Orchestrator] DB save failed: {e}")
 
     async def handle_message(self, data: dict) -> None:
         msg_type = data.get("type")
