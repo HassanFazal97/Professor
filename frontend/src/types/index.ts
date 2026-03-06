@@ -171,3 +171,64 @@ export type ServerMessage =
   | StateUpdateMessage
   | ScrollBoardMessage
   | ErrorMessage;
+
+// ── Auth ─────────────────────────────────────────────────────────────────────
+
+export interface UserOut {
+  id: string;
+  email: string;
+  display_name: string | null;
+  avatar_url: string | null;
+  created_at: string;
+}
+
+// ── Notebooks / Pages ─────────────────────────────────────────────────────────
+
+export type PaperStyle = "blank" | "lined" | "graph";
+
+export interface NotebookOut {
+  id: string;
+  title: string;
+  subject: string | null;
+  color: string;
+  emoji: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface NotebookCreateBody {
+  title: string;
+  subject?: string;
+  color?: string;
+  emoji?: string;
+}
+
+export interface PageOut {
+  id: string;
+  notebook_id: string;
+  title: string;
+  page_number: number;
+  paper_style: PaperStyle;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface PageCreateBody {
+  title: string;
+  paper_style?: PaperStyle;
+}
+
+export interface SessionStateOut {
+  id: string;
+  page_id: string;
+  current_subject: string | null;
+  tutor_mode: string | null;
+  board_next_y: number;
+  board_viewport_y: number;
+  student_content_bottom_y: number;
+  board_width: number;
+  board_height: number;
+  conversation_history: Array<{ role: string; content: string; timestamp: number }>;
+  tldraw_snapshot: Record<string, unknown> | null;
+  overlay_strokes: StrokeData[];
+}
