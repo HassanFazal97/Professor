@@ -1,28 +1,20 @@
 "use client";
 
-import AudioManager from "@/components/AudioManager";
-import SessionControls from "@/components/SessionControls";
-import TutorPanel from "@/components/TutorPanel";
-import Whiteboard from "@/components/Whiteboard";
+import { useEffect } from "react";
+import { useRouter } from "next/navigation";
+import { useAuth } from "@/hooks/useAuth";
 
-export default function HomePage() {
-  return (
-    <main className="flex h-screen w-screen overflow-hidden">
-      {/* Left panel — AI avatar, voice status, transcript */}
-      <aside className="flex w-80 flex-shrink-0 flex-col border-r border-gray-200 bg-white shadow-sm">
-        <TutorPanel />
-        <div className="border-t border-gray-200 p-3">
-          <SessionControls />
-        </div>
-      </aside>
+export default function RootPage() {
+  const router = useRouter();
+  const isAuthenticated = useAuth((s) => s.isAuthenticated);
 
-      {/* Right panel — whiteboard canvas */}
-      <section className="relative flex-1 overflow-hidden">
-        <Whiteboard />
-      </section>
+  useEffect(() => {
+    if (isAuthenticated) {
+      router.replace("/library");
+    } else {
+      router.replace("/login");
+    }
+  }, [isAuthenticated, router]);
 
-      {/* Hidden audio management component */}
-      <AudioManager />
-    </main>
-  );
+  return null;
 }
