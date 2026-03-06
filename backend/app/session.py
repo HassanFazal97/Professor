@@ -1,5 +1,10 @@
+from __future__ import annotations
+
 from dataclasses import dataclass, field
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
+
+if TYPE_CHECKING:
+    from app.models import TutorSessionRecord
 
 TutorMode = Literal["listening", "guiding", "demonstrating", "evaluating"]
 
@@ -76,6 +81,51 @@ class TutorSession:
         # Keep only the last 10 snapshots to limit memory
         if len(self.board_snapshots) > 10:
             self.board_snapshots = self.board_snapshots[-10:]
+
+    @classmethod
+    def from_db_record(cls, record: "TutorSessionRecord", page_id: str) -> "TutorSession":
+        """Reconstruct a TutorSession from a persisted DB record."""
+        history = []
+        for turn in (record.conversation_history or []):
+            history.append(
+                ConversationTurn(
+                    role=turn["role"],
+                    content=turn["content"],
+                    timestamp=turn.get("timestamp", 0.0),
+                )
+            )
+        return cls(
+            session_id=page_id,
+            conversation_history=history,
+            current_subject=record.current_subject or "",
+            tutor_mode=record.tutor_mode or "listening",
+            board_next_y=record.board_next_y,
+            board_viewport_y=record.board_viewport_y,
+            student_content_bottom_y=record.student_content_bottom_y,
+            board_width=record.board_width,
+            board_height=record.board_height,
+            is_active=True,
+        )
+
+    def to_db_dict(self) -> dict:
+        """Serialize session scalars for upsert into tutor_sessions."""
+        return {
+            "current_subject": self.current_subject,
+            "tutor_mode": self.tutor_mode,
+            "board_next_y": self.board_next_y,
+            "board_viewport_y": self.board_viewport_y,
+            "student_content_bottom_y": self.student_content_bottom_y,
+            "board_width": self.board_width,
+            "board_height": self.board_height,
+            "conversation_history": [
+                {
+                    "role": t.role,
+                    "content": t.content,
+                    "timestamp": t.timestamp,
+                }
+                for t in self.conversation_history
+            ],
+        }
 
     def to_anthropic_messages(self) -> list[dict]:
         """Convert conversation history to Anthropic API message format."""
