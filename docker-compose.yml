@@ -1,4 +1,22 @@
 services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: ai-tutor-postgres
+    environment:
+      POSTGRES_USER: professor
+      POSTGRES_PASSWORD: professor
+      POSTGRES_DB: professor
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U professor"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
   latex-renderer:
     build:
       context: ./backend/latex_renderer
@@ -18,8 +36,12 @@ services:
     environment:
       FRONTEND_URL: "http://localhost:3000"
       LATEX_RENDER_URL: "http://latex-renderer:3001/mathjax"
+      DATABASE_URL: "postgresql+asyncpg://professor:professor@postgres:5432/professor"
     depends_on:
-      - latex-renderer
+      postgres:
+        condition: service_healthy
+      latex-renderer:
+        condition: service_started
     ports:
       - "8000:8000"
     restart: unless-stopped
@@ -29,9 +51,14 @@ services:
       context: ./frontend
     container_name: ai-tutor-frontend
     environment:
+      NEXT_PUBLIC_BACKEND_URL: "http://localhost:8000"
       NEXT_PUBLIC_BACKEND_WS_URL: "ws://localhost:8000"
+      NEXT_PUBLIC_GOOGLE_CLIENT_ID: "${GOOGLE_CLIENT_ID:-}"
     depends_on:
       - backend
     ports:
       - "3000:3000"
     restart: unless-stopped
+
+volumes:
+  postgres_data:

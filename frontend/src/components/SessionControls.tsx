@@ -5,7 +5,11 @@ import { useTutorSession } from "@/hooks/useTutorSession";
 import { useVoicePipeline } from "@/hooks/useVoicePipeline";
 import { audioPlayer } from "@/lib/audioPlayer";
 
-export default function SessionControls() {
+interface Props {
+  pageId?: string;
+}
+
+export default function SessionControls({ pageId }: Props) {
   const spaceHeldRef = useRef(false);
   const { isConnected, sessionId, startSession, endSession, adaSpeaking, setAdaSpeaking } =
     useTutorSession();
@@ -22,7 +26,7 @@ export default function SessionControls() {
   }, [setAdaSpeaking]);
 
   const handleStart = () => {
-    startSession();
+    startSession(pageId);
   };
 
   const handleEnd = () => {

@@ -2,6 +2,7 @@ import { create } from "zustand";
 import type { TutorMode, ServerMessage, ClientMessage } from "@/types";
 import { TutorWebSocket } from "@/lib/websocket";
 import { audioPlayer } from "@/lib/audioPlayer";
+import { tokenStorage } from "@/lib/auth";
 import { useWhiteboard } from "./useWhiteboard";
 
 interface ConversationTurn {
@@ -19,7 +20,7 @@ interface TutorSessionState {
   ws: TutorWebSocket | null;
 
   // Actions
-  startSession: () => void;
+  startSession: (pageId?: string) => void;
   endSession: () => void;
   send: (msg: ClientMessage) => void;
   sendTranscript: (text: string) => void;
@@ -28,7 +29,10 @@ interface TutorSessionState {
 }
 
 export const useTutorSession = create<TutorSessionState>((set, get) => {
-  const resolveWsUrl = (sessionId: string): string => {
+  const resolveWsUrl = (pageId: string): string => {
+    const token = tokenStorage.get();
+    const tokenParam = token ? `?token=${encodeURIComponent(token)}` : "";
+
     const configured = process.env.NEXT_PUBLIC_BACKEND_WS_URL?.trim();
     if (configured) {
       const normalized = configured
@@ -38,15 +42,15 @@ export const useTutorSession = create<TutorSessionState>((set, get) => {
       const base = normalized.startsWith("ws://") || normalized.startsWith("wss://")
         ? normalized
         : `ws://${normalized}`;
-      return `${base}/ws/${sessionId}`;
+      return `${base}/ws/${pageId}${tokenParam}`;
     }
 
     if (typeof window !== "undefined") {
       const proto = window.location.protocol === "https:" ? "wss" : "ws";
-      return `${proto}://${window.location.hostname}:8000/ws/${sessionId}`;
+      return `${proto}://${window.location.hostname}:8000/ws/${pageId}${tokenParam}`;
     }
 
-    return `ws://localhost:8000/ws/${sessionId}`;
+    return `ws://localhost:8000/ws/${pageId}${tokenParam}`;
   };
 
   // When Ada finishes speaking naturally (queue drained), clear the speaking
@@ -62,11 +66,11 @@ export const useTutorSession = create<TutorSessionState>((set, get) => {
   waitForStudent: false,
   ws: null,
 
-  startSession: () => {
+  startSession: (pageId?: string) => {
     // Unlock AudioContext while we're still inside the click handler
     audioPlayer.resume();
 
-    const sessionId = crypto.randomUUID();
+    const sessionId = pageId ?? crypto.randomUUID();
     const ws = new TutorWebSocket(
       resolveWsUrl(sessionId),
       (msg: ServerMessage) => get()._handleServerMessage(msg),
