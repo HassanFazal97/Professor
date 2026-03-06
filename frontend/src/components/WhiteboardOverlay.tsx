@@ -2,20 +2,22 @@
 
 import { useEffect, useRef } from "react";
 import { useWhiteboard } from "@/hooks/useWhiteboard";
-import type { Stroke, StrokeData } from "@/types";
+import type { PaperStyle, Stroke, StrokeData } from "@/types";
 
 const JITTER_PX = 0.35;
 const DEFAULT_SPEED = 2.0;
 
+interface Props {
+  paperStyle?: PaperStyle;
+}
+
 /**
  * Transparent canvas overlay on top of the tldraw canvas.
- * The AI's animated handwriting strokes are drawn here so they
- * don't interfere with the student's tldraw shapes.
+ * Draws paper background (lined/graph) and Ada's animated handwriting strokes.
  */
-export default function WhiteboardOverlay() {
+export default function WhiteboardOverlay({ paperStyle = "blank" }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const cancelAnimationRef = useRef<(() => void) | null>(null);
-  const completedRef = useRef<StrokeData[]>([]);
   const activePartialRef = useRef<StrokeData | null>(null);
   const jitterRef = useRef<Map<string, { x: number; y: number }>>(new Map());
   const {
@@ -24,33 +26,87 @@ export default function WhiteboardOverlay() {
     setOverlayCanvas,
     editor,
     overlayResetVersion,
+    completedStrokes,
+    addCompletedStroke,
   } = useWhiteboard();
 
-
-  // Register this canvas with the store so Whiteboard.tsx can include it
-  // in composite snapshots sent to the LLM for vision.
   useEffect(() => {
     if (canvasRef.current) setOverlayCanvas(canvasRef.current);
     return () => setOverlayCanvas(null);
   }, [setOverlayCanvas]);
 
-  // Keep the canvas bitmap buffer in sync with its CSS layout size.
-  // Without this, the default 300×150 buffer causes strokes to be
-  // stretched and clipped.
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
-
     const sync = () => {
       canvas.width = canvas.offsetWidth;
       canvas.height = canvas.offsetHeight;
     };
-
     sync();
     const observer = new ResizeObserver(sync);
     observer.observe(canvas);
     return () => observer.disconnect();
   }, []);
+
+  const drawPaperBackground = (
+    ctx: CanvasRenderingContext2D,
+    w: number,
+    h: number,
+  ) => {
+    if (paperStyle === "lined") {
+      // Horizontal ruled lines
+      ctx.save();
+      ctx.strokeStyle = "#dde8f4";
+      ctx.lineWidth = 1;
+      for (let y = 32; y < h; y += 32) {
+        ctx.beginPath();
+        ctx.moveTo(0, y);
+        ctx.lineTo(w, y);
+        ctx.stroke();
+      }
+      // Red margin line
+      ctx.strokeStyle = "#ffb3b3";
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.moveTo(64, 0);
+      ctx.lineTo(64, h);
+      ctx.stroke();
+      ctx.restore();
+    } else if (paperStyle === "graph") {
+      ctx.save();
+      // Minor grid lines
+      ctx.strokeStyle = "#e8edf4";
+      ctx.lineWidth = 0.5;
+      for (let x = 0; x < w; x += 24) {
+        ctx.beginPath();
+        ctx.moveTo(x, 0);
+        ctx.lineTo(x, h);
+        ctx.stroke();
+      }
+      for (let y = 0; y < h; y += 24) {
+        ctx.beginPath();
+        ctx.moveTo(0, y);
+        ctx.lineTo(w, y);
+        ctx.stroke();
+      }
+      // Major grid lines
+      ctx.strokeStyle = "#c8d4e4";
+      ctx.lineWidth = 1;
+      for (let x = 0; x < w; x += 120) {
+        ctx.beginPath();
+        ctx.moveTo(x, 0);
+        ctx.lineTo(x, h);
+        ctx.stroke();
+      }
+      for (let y = 0; y < h; y += 120) {
+        ctx.beginPath();
+        ctx.moveTo(0, y);
+        ctx.lineTo(w, y);
+        ctx.stroke();
+      }
+      ctx.restore();
+    }
+  };
 
   const renderScene = () => {
     const canvas = canvasRef.current;
@@ -59,6 +115,9 @@ export default function WhiteboardOverlay() {
     if (!ctx) return;
 
     ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+    // Paper background first (screen-space, fixed)
+    drawPaperBackground(ctx, canvas.width, canvas.height);
 
     const drawStrokeBatch = (batch: StrokeData) => {
       for (const stroke of batch.strokes) {
@@ -102,11 +161,11 @@ export default function WhiteboardOverlay() {
       }
     };
 
-    for (const batch of completedRef.current) drawStrokeBatch(batch);
+    for (const batch of completedStrokes) drawStrokeBatch(batch);
     if (activePartialRef.current) drawStrokeBatch(activePartialRef.current);
   };
 
-  // Repaint on camera / editor changes so world-space strokes stay aligned.
+  // Repaint on camera / editor changes
   useEffect(() => {
     if (!editor) {
       renderScene();
@@ -116,18 +175,21 @@ export default function WhiteboardOverlay() {
       renderScene();
     });
     renderScene();
-  }, [editor]);
+  }, [editor, completedStrokes, paperStyle]);
 
-  // Clear vector/raster caches when the orchestrator issues a board clear.
+  // Re-render when paper style changes
   useEffect(() => {
-    completedRef.current = [];
+    renderScene();
+  }, [paperStyle]);
+
+  // Clear overlay on board clear
+  useEffect(() => {
     activePartialRef.current = null;
     jitterRef.current.clear();
     renderScene();
   }, [overlayResetVersion]);
 
   useEffect(() => {
-    // Cancel any in-progress animation first.
     if (cancelAnimationRef.current) {
       cancelAnimationRef.current();
       cancelAnimationRef.current = null;
@@ -139,10 +201,10 @@ export default function WhiteboardOverlay() {
       return;
     }
 
-    const queue: Array<{ stroke: Stroke; pointIdx: number; isFirst: boolean }> = [];
+    const queue: Array<{ stroke: Stroke; pointIdx: number }> = [];
     pendingStrokes.strokes.forEach((stroke) => {
       stroke.points.forEach((_, idx) => {
-        queue.push({ stroke, pointIdx: idx, isFirst: idx === 0 });
+        queue.push({ stroke, pointIdx: idx });
       });
     });
 
@@ -158,10 +220,7 @@ export default function WhiteboardOverlay() {
       ...s,
       points: [] as typeof s.points,
     }));
-    activePartialRef.current = {
-      ...pendingStrokes,
-      strokes: activePoints,
-    };
+    activePartialRef.current = { ...pendingStrokes, strokes: activePoints };
 
     const tick = () => {
       if (cancelled || !activePartialRef.current) return;
@@ -171,8 +230,9 @@ export default function WhiteboardOverlay() {
         const item = queue[index];
         const strokeIdx = pendingStrokes.strokes.indexOf(item.stroke);
         if (strokeIdx >= 0) {
-          const sourcePoint = item.stroke.points[item.pointIdx];
-          activePartialRef.current.strokes[strokeIdx].points.push(sourcePoint);
+          activePartialRef.current.strokes[strokeIdx].points.push(
+            item.stroke.points[item.pointIdx],
+          );
         }
         index++;
       }
@@ -182,10 +242,8 @@ export default function WhiteboardOverlay() {
       if (index < queue.length) {
         requestAnimationFrame(tick);
       } else {
-        // Keep completed strokes on the overlay canvas so they render
-        // identically to the animation — no hand-off to tldraw which
-        // applies its own smoothing/pressure model and causes a visual shift.
-        completedRef.current.push(pendingStrokes);
+        // Move to completed strokes in Zustand (replaces completedRef)
+        addCompletedStroke(pendingStrokes);
         activePartialRef.current = null;
         renderScene();
         clearPendingStrokes();
