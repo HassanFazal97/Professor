@@ -5,20 +5,24 @@ import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 
+import numpy as np
+from PIL import Image, ImageDraw
 from fontTools.pens.recordingPen import RecordingPen
 from fontTools.ttLib import TTFont
 
-# Patrick Hand is a Google Font (OFL license) designed to look like clean,
-# printed handwriting — less curvy/cursive than Caveat.
-# We download the static TTF on first use and cache it next to this file.
+# Patrick Hand is a Google Font (OFL license) — clean printed handwriting style.
 _FONT_URL = (
     "https://cdn.jsdelivr.net/gh/google/fonts@main"
     "/ofl/patrickhand/PatrickHand-Regular.ttf"
 )
 _FONT_PATH = Path(__file__).parent / "PatrickHand-Regular.ttf"
 
-# How tall capital letters should appear on the whiteboard canvas (px).
+# Visual cap height on the whiteboard canvas (px).
 _TARGET_CAP_HEIGHT_PX = 40
+
+# Oversample factor for rasterizing glyphs before skeletonizing.
+# Higher = smoother skeleton but more memory/time per glyph.
+_OVERSAMPLE = 4
 
 
 # ── Wire-format dataclasses (must match frontend StrokeData type) ─────────────
@@ -66,7 +70,6 @@ class StrokeData:
 
 
 def _sample_quadratic(p0, p1, p2, n: int = 3) -> list[tuple]:
-    """Sample n+1 points on a quadratic bezier p0→p2 with control p1."""
     pts = []
     for i in range(n + 1):
         t = i / n
@@ -78,7 +81,6 @@ def _sample_quadratic(p0, p1, p2, n: int = 3) -> list[tuple]:
 
 
 def _sample_cubic(p0, p1, p2, p3, n: int = 4) -> list[tuple]:
-    """Sample n+1 points on a cubic bezier p0→p3 with controls p1, p2."""
     pts = []
     for i in range(n + 1):
         t = i / n
@@ -93,51 +95,34 @@ def _sample_cubic(p0, p1, p2, p3, n: int = 4) -> list[tuple]:
 
 
 def _recording_to_contours(value: list) -> list[list[tuple]]:
-    """
-    Convert a RecordingPen's value list into a list of contours.
-    Each contour is a list of (x, y) tuples in font units.
-    Bezier curves are sampled into line segments.
-    """
+    """Convert a RecordingPen value list into contours (lists of (x,y) font-unit points)."""
     contours: list[list[tuple]] = []
     current: list[tuple] = []
 
     for op, args in value:
         if op == "moveTo":
-            # args = ((x, y),)
             if len(current) > 1:
                 contours.append(current)
             current = [args[0]]
 
         elif op == "lineTo":
-            # args = ((x, y),)
             current.append(args[0])
 
         elif op == "qCurveTo":
-            # args = (off_curve_1, ..., on_curve_end)
-            # TrueType quadratic spline: consecutive off-curves have an implicit
-            # on-curve midpoint between them.
             pts = list(args)
             start = current[-1] if current else pts[0]
-
             while len(pts) > 2:
                 p1 = pts[0]
-                # Implicit on-curve midpoint between two consecutive off-curves
-                p2 = (
-                    (pts[0][0] + pts[1][0]) / 2.0,
-                    (pts[0][1] + pts[1][1]) / 2.0,
-                )
+                p2 = ((pts[0][0] + pts[1][0]) / 2.0, (pts[0][1] + pts[1][1]) / 2.0)
                 current.extend(_sample_quadratic(start, p1, p2)[1:])
                 start = p2
                 pts.pop(0)
-
-            # Final segment: start → pts[1] with control pts[0]
             if len(pts) == 2:
                 current.extend(_sample_quadratic(start, pts[0], pts[1])[1:])
             elif len(pts) == 1:
                 current.append(pts[0])
 
         elif op == "curveTo":
-            # args = (cp1, cp2, end_point)  — cubic bezier
             p0 = current[-1] if current else args[0]
             current.extend(_sample_cubic(p0, args[0], args[1], args[2])[1:])
 
@@ -152,17 +137,167 @@ def _recording_to_contours(value: list) -> list[list[tuple]]:
     return contours
 
 
+# ── Skeleton helpers ───────────────────────────────────────────────────────────
+
+
+def _signed_area(contour: list) -> float:
+    """
+    Signed polygon area in font coordinate space (y-up).
+    Positive → counter-clockwise (outer contour).
+    Negative → clockwise (inner counter/hole).
+    """
+    n = len(contour)
+    if n < 3:
+        return 0.0
+    return (
+        sum(
+            contour[i][0] * contour[(i + 1) % n][1]
+            - contour[(i + 1) % n][0] * contour[i][1]
+            for i in range(n)
+        )
+        / 2.0
+    )
+
+
+def _zhang_suen_thin(img: np.ndarray) -> np.ndarray:
+    """
+    Vectorized Zhang-Suen thinning: reduces a filled binary image to a
+    1-pixel-wide skeleton representing the centerline of each stroke.
+    """
+    img = img.astype(bool)
+
+    def _step(img: np.ndarray, even_step: bool):
+        u = img.astype(np.uint8)
+        p = np.pad(u, 1)
+        P2 = p[0:-2, 1:-1]   # N
+        P3 = p[0:-2, 2:]     # NE
+        P4 = p[1:-1, 2:]     # E
+        P5 = p[2:,   2:]     # SE
+        P6 = p[2:,   1:-1]   # S
+        P7 = p[2:,   0:-2]   # SW
+        P8 = p[1:-1, 0:-2]   # W
+        P9 = p[0:-2, 0:-2]   # NW
+
+        B = P2 + P3 + P4 + P5 + P6 + P7 + P8 + P9
+
+        # Count 0→1 transitions in the cyclic sequence P2…P9,P2
+        seq = np.stack([P2, P3, P4, P5, P6, P7, P8, P9, P2], axis=0)
+        A = np.sum((seq[:-1] == 0) & (seq[1:] == 1), axis=0)
+
+        cond12 = (B >= 2) & (B <= 6) & (A == 1)
+        if even_step:
+            cond34 = (P2 * P4 * P6 == 0) & (P4 * P6 * P8 == 0)
+        else:
+            cond34 = (P2 * P4 * P8 == 0) & (P2 * P6 * P8 == 0)
+
+        remove = img & cond12 & cond34
+        return img & ~remove, bool(np.any(remove))
+
+    changed = True
+    while changed:
+        img, c1 = _step(img, even_step=True)
+        img, c2 = _step(img, even_step=False)
+        changed = c1 or c2
+
+    return img
+
+
+def _trace_skeleton(skel: np.ndarray) -> list[list[tuple[float, float]]]:
+    """
+    Walk skeleton pixels into ordered lists of (x_pixel, y_pixel) points.
+    Starts from endpoint pixels (single neighbor) so each stroke is traced
+    from tip to tip.  Prefers to continue in the same direction at each step
+    to produce smoother curves.
+    """
+    ys, xs = np.where(skel)
+    if len(ys) == 0:
+        return []
+
+    pt_set: set[tuple[int, int]] = set(zip(ys.tolist(), xs.tolist()))
+
+    def nbrs8(y: int, x: int) -> list[tuple[int, int]]:
+        return [
+            (y + dy, x + dx)
+            for dy in (-1, 0, 1)
+            for dx in (-1, 0, 1)
+            if (dy, dx) != (0, 0) and (y + dy, x + dx) in pt_set
+        ]
+
+    nc = {p: len(nbrs8(*p)) for p in pt_set}
+
+    # Endpoints first (nc == 1), then the rest; guarantees complete strokes
+    ordered = sorted(pt_set, key=lambda p: (nc[p] > 1, p))
+
+    visited: set[tuple[int, int]] = set()
+    paths: list[list[tuple[float, float]]] = []
+
+    for start in ordered:
+        if start in visited:
+            continue
+        path = [start]
+        visited.add(start)
+        prev: tuple[int, int] | None = None
+        cur = start
+
+        while True:
+            cands = [n for n in nbrs8(*cur) if n not in visited]
+            if not cands:
+                break
+            if prev is not None:
+                dy, dx = cur[0] - prev[0], cur[1] - prev[1]
+                straight = (cur[0] + dy, cur[1] + dx)
+                nxt = straight if straight in set(cands) else cands[0]
+            else:
+                nxt = cands[0]
+            prev, cur = cur, nxt
+            visited.add(nxt)
+            path.append(nxt)
+
+        if len(path) >= 2:
+            # Convert (row, col) → (x, y)
+            paths.append([(float(col), float(row)) for row, col in path])
+
+    # Any isolated dots
+    for row, col in pt_set:
+        if (row, col) not in visited:
+            paths.append([(float(col), float(row))])
+
+    return paths
+
+
+def _smooth_path(
+    path: list[tuple[float, float]], window: int = 5
+) -> list[tuple[float, float]]:
+    """Moving-average smoothing to remove pixel-grid jagginess."""
+    n = len(path)
+    if n < window:
+        return path
+    half = window // 2
+    out = []
+    for i in range(n):
+        lo = max(0, i - half)
+        hi = min(n, i + half + 1)
+        xs = [path[j][0] for j in range(lo, hi)]
+        ys = [path[j][1] for j in range(lo, hi)]
+        out.append((sum(xs) / len(xs), sum(ys) / len(ys)))
+    return out
+
+
 # ── Main synthesizer ──────────────────────────────────────────────────────────
 
 
 class HandwritingSynthesizer:
     """
-    Converts plain text to handwriting stroke coordinates using the
-    Patrick Hand font (Google Fonts, OFL license) — a clean, printed
-    handwriting style.
+    Converts plain text to handwriting stroke coordinates.
 
-    The font is downloaded once to the package directory and cached.
-    If the font or fonttools is unavailable, the stub path is used as fallback.
+    Rather than tracing glyph outlines (which produces "bubble-letter" strokes),
+    this synthesizer:
+      1. Rasterizes each glyph to a binary bitmap using PIL.
+      2. Applies Zhang-Suen thinning to extract the 1-px centerline skeleton.
+      3. Traces the skeleton into ordered stroke paths.
+      4. Caches the result per glyph so the cost is paid only once per character.
+
+    The result looks like actual pen strokes rather than outlines of filled shapes.
     """
 
     def __init__(self):
@@ -170,7 +305,9 @@ class HandwritingSynthesizer:
         self._glyph_set = None
         self._cmap: dict | None = None
         self._scale: float = 1.0
-        self._cap_height_units: int = 700  # fallback
+        self._cap_height_units: int = 700
+        # Cache: glyph_name → list of paths in font-unit coordinates (y-up, baseline=0)
+        self._skeleton_cache: dict[str, list[list[tuple[float, float]]]] = {}
 
     # ── Font loading ──────────────────────────────────────────────────────────
 
@@ -181,8 +318,6 @@ class HandwritingSynthesizer:
         if not _FONT_PATH.exists():
             print("Downloading PatrickHand-Regular.ttf from Google Fonts…", flush=True)
             try:
-                # macOS Python often lacks system CA certs; try certifi first,
-                # then fall back to an unverified context (font download only).
                 try:
                     import certifi
                     ctx = ssl.create_default_context(cafile=certifi.where())
@@ -195,15 +330,13 @@ class HandwritingSynthesizer:
                     _FONT_PATH.write_bytes(resp.read())
                 print("Font downloaded successfully.", flush=True)
             except Exception as e:
-                raise RuntimeError(f"Could not download Caveat font: {e}") from e
+                raise RuntimeError(f"Could not download Patrick Hand font: {e}") from e
 
         self._font = TTFont(str(_FONT_PATH))
         self._glyph_set = self._font.getGlyphSet()
         self._cmap = self._font.getBestCmap() or {}
 
         upm = self._font["head"].unitsPerEm
-
-        # Prefer OS/2 sCapHeight; fall back to 70% of UPM
         os2 = self._font.get("OS/2")
         if os2 and getattr(os2, "sCapHeight", 0):
             self._cap_height_units = os2.sCapHeight
@@ -211,6 +344,79 @@ class HandwritingSynthesizer:
             self._cap_height_units = int(upm * 0.7)
 
         self._scale = _TARGET_CAP_HEIGHT_PX / self._cap_height_units
+
+    # ── Glyph skeleton (cached) ───────────────────────────────────────────────
+
+    def _get_glyph_skeleton(
+        self, glyph_name: str
+    ) -> list[list[tuple[float, float]]]:
+        """
+        Return skeleton stroke paths for *glyph_name* in font-unit coordinates
+        (x right, y up, baseline at y=0).  Computed once and cached.
+        """
+        if glyph_name in self._skeleton_cache:
+            return self._skeleton_cache[glyph_name]
+
+        glyph = self._glyph_set[glyph_name]
+        pen = RecordingPen()
+        glyph.draw(pen)
+        contours = _recording_to_contours(pen.value)
+
+        if not contours:
+            self._skeleton_cache[glyph_name] = []
+            return []
+
+        # pixels-per-font-unit in the raster image
+        rs = self._scale * _OVERSAMPLE
+        PAD = 4
+
+        # Allocate enough vertical space for ascenders and descenders
+        asc_px  = int(self._cap_height_units * rs * 1.3) + PAD
+        desc_px = int(self._cap_height_units * rs * 0.45) + PAD
+        adv = glyph.width if hasattr(glyph, "width") else self._cap_height_units
+        w_px = max(8, int(adv * rs) + PAD * 2)
+        h_px = asc_px + desc_px
+        baseline_px = asc_px  # row index where font y=0 maps to
+
+        img = Image.new("L", (w_px, h_px), 0)
+        draw = ImageDraw.Draw(img)
+
+        for contour in contours:
+            if len(contour) < 3:
+                continue
+            pts = [
+                (int(round(PAD + fx * rs)), int(round(baseline_px - fy * rs)))
+                for fx, fy in contour
+            ]
+            # TrueType (TTF) fonts use clockwise outer contours → negative signed area.
+            # Inner counters/holes are counter-clockwise → positive signed area.
+            # Fill outer contours white (255) and punch holes black (0).
+            area = _signed_area(contour)
+            draw.polygon(pts, fill=255 if area < 0 else 0)
+
+        arr = np.array(img) > 127
+        if not arr.any():
+            self._skeleton_cache[glyph_name] = []
+            return []
+
+        skel = _zhang_suen_thin(arr)
+        pixel_paths = _trace_skeleton(skel)
+
+        font_paths: list[list[tuple[float, float]]] = []
+        for pp in pixel_paths:
+            if len(pp) < 2:
+                continue
+            # Convert pixel coords → font units (y-up)
+            fp: list[tuple[float, float]] = [
+                ((bx - PAD) / rs, (baseline_px - by) / rs)
+                for bx, by in pp
+            ]
+            fp = _smooth_path(fp, window=5)
+            if len(fp) >= 2:
+                font_paths.append(fp)
+
+        self._skeleton_cache[glyph_name] = font_paths
+        return font_paths
 
     # ── Public API ────────────────────────────────────────────────────────────
 
@@ -220,11 +426,6 @@ class HandwritingSynthesizer:
         color: str = "#000000",
         position: dict | None = None,
     ) -> StrokeData:
-        """
-        Convert *text* to stroke data ready to send to the frontend.
-
-        Falls back to a simple stub if the font can't be loaded.
-        """
         pos = position or {"x": 100, "y": 100}
         try:
             self._ensure_font()
@@ -238,89 +439,69 @@ class HandwritingSynthesizer:
     def _synthesize_with_font(self, text: str, color: str, position: dict) -> StrokeData:
         scale = self._scale
         strokes: list[Stroke] = []
-        x_cursor = 0.0  # accumulated horizontal advance in scaled pixels
+        x_cursor = 0.0
         superscript_scale = scale * 0.62
         superscript_rise = _TARGET_CAP_HEIGHT_PX * 0.55
         drawn_char_count = 0
 
         def draw_char(char: str, char_scale: float, y_offset_px: float = 0.0) -> float:
-            """Draw a single character and return horizontal advance in px."""
             nonlocal drawn_char_count
 
             if char == " ":
                 return self._cap_height_units * 0.32 * char_scale
 
             glyph_name = self._cmap.get(ord(char)) if self._cmap else None  # type: ignore[union-attr]
-
             if glyph_name is None or glyph_name not in self._glyph_set:
-                # Use a space-width advance for unknown characters
                 return self._cap_height_units * 0.35 * char_scale
 
             try:
                 glyph = self._glyph_set[glyph_name]
-                pen = RecordingPen()
-                glyph.draw(pen)
-                contours = _recording_to_contours(pen.value)
-                advance_units = (
-                    glyph.width if hasattr(glyph, "width") else self._cap_height_units * 0.5
-                )
+                advance_units = glyph.width if hasattr(glyph, "width") else self._cap_height_units * 0.5
+                font_paths = self._get_glyph_skeleton(glyph_name)
             except Exception as exc:
-                print(f"Glyph render failed for {char!r}: {exc}", flush=True)
+                print(f"Glyph skeleton failed for {char!r}: {exc}", flush=True)
                 return self._cap_height_units * 0.35 * char_scale
 
-            for contour in contours:
-                if len(contour) < 2:
+            # Stroke width: slightly thicker than the raw 1-px skeleton to look like pen ink.
+            # Scale proportionally for superscripts.
+            scale_ratio = char_scale / max(scale, 1e-9)
+            stroke_width = round(2.2 * scale_ratio**0.9, 2)
+
+            for fp in font_paths:
+                if len(fp) < 2:
                     continue
-
                 points: list[StrokePoint] = []
-                n = len(contour)
+                n = len(fp)
 
-                for idx, pt in enumerate(contour):
-                    try:
-                        fx, fy = pt
-                    except (TypeError, ValueError):
-                        continue
+                for idx, (fx, fy) in enumerate(fp):
+                    cx = position["x"] + x_cursor + fx * char_scale
+                    cy = position["y"] - fy * char_scale - y_offset_px
 
-                    # Transform to canvas coordinates:
-                    # • X: position["x"] + current character offset + glyph x * char_scale
-                    # • Y: font Y-axis is up; canvas Y-axis is down.
-                    px = position["x"] + x_cursor + fx * char_scale
-                    py = position["y"] - fy * char_scale - y_offset_px
-
-                    # Sine pressure curve: soft at start and end, full in the middle
+                    # Sine pressure curve: softer at stroke start/end, full in middle
                     t = idx / max(n - 1, 1)
-                    pressure = 0.4 + 0.6 * math.sin(math.pi * t)
+                    pressure = 0.35 + 0.65 * math.sin(math.pi * t)
 
-                    # Keep jitter proportional when drawing smaller superscripts.
-                    jitter = 0.8 * (char_scale / max(scale, 1e-6))
-                    px += random.uniform(-jitter, jitter)
-                    py += random.uniform(-jitter, jitter)
+                    # Light pen-jitter proportional to scale
+                    jitter = 0.4 * scale_ratio
+                    cx += random.uniform(-jitter, jitter)
+                    cy += random.uniform(-jitter, jitter)
 
                     points.append(
                         StrokePoint(
-                            x=round(px, 2),
-                            y=round(py, 2),
+                            x=round(cx, 2),
+                            y=round(cy, 2),
                             pressure=round(pressure, 3),
                         )
                     )
 
-                stroke_width = 1.5 * (char_scale / max(scale, 1e-6)) ** 0.85
-                strokes.append(Stroke(points=points, color=color, width=round(stroke_width, 2)))
+                strokes.append(Stroke(points=points, color=color, width=stroke_width))
 
             drawn_char_count += 1
             return advance_units * char_scale
 
         def read_superscript_token(src: str, start_idx: int) -> tuple[str, int]:
-            """
-            Read exponent token after '^':
-            - x^{n-1} -> "n-1"
-            - x^(n-1) -> "n-1"
-            - x^n -> "n"
-            Returns (token_text, consumed_chars_from_start_idx).
-            """
             if start_idx >= len(src):
                 return "", 0
-
             opener = src[start_idx]
             if opener in "{(":
                 closer = "}" if opener == "{" else ")"
@@ -338,9 +519,7 @@ class HandwritingSynthesizer:
                     if depth >= 1:
                         buf.append(ch)
                     j += 1
-                # Unmatched group: consume until end, best-effort rendering.
                 return "".join(buf), (len(src) - start_idx)
-
             return src[start_idx], 1
 
         i = 0
@@ -348,9 +527,8 @@ class HandwritingSynthesizer:
             char = text[i]
             if char == "\n":
                 i += 1
-                continue  # multi-line layout not implemented
+                continue
 
-            # Render caret notation as true superscript in stroke coordinates.
             if char == "^":
                 token, consumed = read_superscript_token(text, i + 1)
                 if consumed > 0 and token:
@@ -370,8 +548,6 @@ class HandwritingSynthesizer:
             x_cursor += draw_char(char, char_scale=scale)
             i += 1
 
-        # Set animation speed so writing takes ~0.12s per character (min 1s total).
-        # The frontend draws `Math.round(speed * 2)` points per frame at ~60fps.
         total_pts = sum(len(s.points) for s in strokes)
         target_sec = max(1.0, 0.12 * max(drawn_char_count, 1))
         anim_speed = max(1.0, round(total_pts / (target_sec * 60 * 2), 2))
