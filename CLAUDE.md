@@ -134,9 +134,9 @@ Note: there is **no `audio_done` message**. TTS end is detected on the frontend 
 {
   "speech": "...",
   "board_actions": [
-    { "type": "write", "content": "x^2 + 1", "format": "text", "position": {"x": 20, "y": 140}, "color": "#0000FF" },
-    { "type": "write", "content": "\\frac{1}{2}", "format": "latex", "position": {"x": 20, "y": 200}, "color": "#000000" },
-    { "type": "underline", "target_area": {"x": 20, "y": 140, "width": 100, "height": 20}, "color": "#FF0000" },
+    { "type": "write", "content": "x^2 + 1", "format": "text", "position": {"x": 0, "y": 140}, "color": "#0000FF" },
+    { "type": "write", "content": "\\frac{1}{2}", "format": "latex", "position": {"x": 0, "y": 200}, "color": "#000000" },
+    { "type": "underline", "target_area": {"x": 0, "y": 140, "width": 100, "height": 20}, "color": "#FF0000" },
     { "type": "clear" }
   ],
   "tutor_state": "listening",
@@ -164,7 +164,7 @@ Note: there is **no `audio_done` message**. TTS end is detected on the frontend 
 ## Key Architectural Patterns
 
 ### Board Position Rebasing (`orchestrator.py`)
-The LLM always writes at `x=20, y=140`. `_rebase_board_actions()` translates y-coordinates to world space, placing new content below both Ada's prior cursor (`board_next_y`) and the student's shapes (`student_content_bottom_y`). When content won't fit in the current viewport, a `scroll_board` sentinel is **prepended** (not `clear`) so the camera pans down to reveal fresh space. `_normalize_board_actions()` runs first to word-wrap long lines based on board width.
+The LLM always writes at `x=0, y=140`. `_rebase_board_actions()` translates coordinates to world space, applying `BOARD_WRITE_X` (default `20`) as the actual x-offset, placing new content below both Ada's prior cursor (`board_next_y`) and the student's shapes (`student_content_bottom_y`). When content won't fit in the current viewport, a `scroll_board` sentinel is **prepended** (not `clear`) so the camera pans down to reveal fresh space. `_normalize_board_actions()` runs first to word-wrap long lines based on board width.
 
 ### Board Cursor Tracking
 After each response, `_update_board_cursor()` reads the actual rendered stroke bottom-y (from `_stroke_payload_bottom_y()`) to advance `board_next_y` accurately. This uses real stroke points rather than fixed estimates.
