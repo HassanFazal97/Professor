@@ -95,14 +95,14 @@ export default function SessionControls() {
         <>
           <button
             onClick={handleStart}
-            className="w-full rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 active:scale-95 transition-transform"
+            className="w-full rounded-xl bg-kia-blue px-4 py-2.5 text-sm font-bold font-heading text-white hover:bg-[#003a8a] active:scale-95 transition-transform uppercase tracking-wide"
           >
             Start Session
           </button>
         </>
       ) : (
         <div className="space-y-2">
-          <div className="flex items-center justify-between text-xs text-gray-500">
+          <div className="flex items-center justify-between text-[10px] font-mono text-kia-gray uppercase tracking-wide">
             <span>Conversation</span>
             <span className="font-mono">{sessionId?.slice(0, 8)}…</span>
           </div>
@@ -118,12 +118,12 @@ export default function SessionControls() {
                 ? "Interrupt KIA and speak"
                 : "Hold to talk"
             }
-            className={`flex w-full items-center justify-center gap-2 rounded-lg px-4 py-2 text-sm font-medium transition-all ${
+            className={`flex w-full items-center justify-center gap-2 rounded-xl px-4 py-2.5 text-sm font-bold font-heading uppercase tracking-wide transition-all ${
               adaSpeaking
-                ? "border border-amber-300 bg-amber-50 text-amber-700"
+                ? "border border-kia-blue/30 bg-kia-blue/10 text-kia-blue"
                 : isListening
-                  ? "bg-green-600 text-white"
-                  : "border border-gray-300 bg-white text-gray-600 hover:bg-gray-50"
+                  ? "bg-kia-blue text-white"
+                  : "border border-kia-warm bg-white text-kia-gray hover:bg-kia-cream"
             }`}
           >
             <svg
@@ -140,7 +140,7 @@ export default function SessionControls() {
             </svg>
             {adaSpeaking ? (
               <span className="flex items-center gap-1.5">
-                <span className="inline-block h-2 w-2 animate-pulse rounded-full bg-amber-500" />
+                <span className="inline-block h-2 w-2 animate-pulse rounded-full bg-kia-blue" />
                 Hold to interrupt + talk
               </span>
             ) : isListening ? (
@@ -155,7 +155,7 @@ export default function SessionControls() {
 
           <button
             onClick={handleEnd}
-            className="w-full rounded-md bg-red-500 px-4 py-2 text-sm font-medium text-white hover:bg-red-600 active:scale-95 transition-transform"
+            className="w-full rounded-xl bg-kia-black px-4 py-2 text-sm font-bold font-heading text-white hover:bg-kia-gray active:scale-95 transition-transform uppercase tracking-wide"
           >
             End Session
           </button>

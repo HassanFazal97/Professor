@@ -9,9 +9,9 @@ export default function HomePage() {
   return (
     <main className="flex h-screen w-screen overflow-hidden">
       {/* Left panel — AI avatar, voice status, transcript */}
-      <aside className="flex w-80 flex-shrink-0 flex-col border-r border-gray-200 bg-white shadow-sm">
+      <aside className="flex w-80 flex-shrink-0 flex-col border-r border-kia-warm bg-kia-cream shadow-sm">
         <TutorPanel />
-        <div className="border-t border-gray-200 p-3">
+        <div className="border-t border-kia-warm p-3">
           <SessionControls />
         </div>
       </aside>
